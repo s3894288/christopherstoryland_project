@@ -1,4 +1,4 @@
-"""Generate 3 XLSX files for thaiput v6.0 FINAL (3 spreadsheets, BOOKINGS 14 cols)."""
+"""Generate 3 XLSX files for thaiput v6.1.0 (3 spreadsheets, BOOKINGS 14 cols)."""
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -90,8 +90,8 @@ def create_registration():
         ws2.column_dimensions[get_column_letter(c)].width = 16
     ws2.column_dimensions['A'].width = 20
 
-    wb.save(os.path.join(DIR,'THAIPUT_REGISTRATION_v6.0.xlsx'))
-    print('Created THAIPUT_REGISTRATION_v6.0.xlsx')
+    wb.save(os.path.join(DIR,'THAIPUT_REGISTRATION_v6.1.xlsx'))
+    print('Created THAIPUT_REGISTRATION_v6.1.xlsx')
 
 # ═══════════════════════════════════════
 # FILE 2: TUTOR
@@ -146,8 +146,8 @@ def create_tutor():
         ws_t = wb.create_sheet(f'Tutor-{name}')
         write_calendar_grid(ws_t, dates, marks)
 
-    wb.save(os.path.join(DIR,'THAIPUT_TUTOR_v6.0.xlsx'))
-    print('Created THAIPUT_TUTOR_v6.0.xlsx')
+    wb.save(os.path.join(DIR,'THAIPUT_TUTOR_v6.1.xlsx'))
+    print('Created THAIPUT_TUTOR_v6.1.xlsx')
 
 # ═══════════════════════════════════════
 # FILE 3: MAIN
@@ -158,7 +158,7 @@ def create_main():
     # ── DASHBOARD ──
     ws = wb.active; ws.title = 'DASHBOARD'
     ws.merge_cells('A1:F1')
-    ws.cell(1,1,'thaiput — Booking System v6.0 FINAL').font = Font(bold=True, size=18)
+    ws.cell(1,1,'thaiput — Booking System v6.1.0').font = Font(bold=True, size=18)
     ws.cell(2,1,'Kiến trúc 3 spreadsheet: Main + Registration + Tutor').font = Font(size=12, color='666666')
     info = [('',''),('CẤU HÌNH',''),
             ('Admin email','(điền vào Config.gs)'),
@@ -196,11 +196,12 @@ def create_main():
     for i,(sid,email,name,pkg,total) in enumerate(synced,2):
         ws2.cell(i,1,sid); ws2.cell(i,2,email); ws2.cell(i,3,name); ws2.cell(i,4,pkg)
         ws2.cell(i,5,total)
-        # SessionsUsed: COUNTIFS Active+Completed+NoShow
+        # SessionsUsed: COUNTIFS Active+Completed+NoShow. Vùng mở $D$2:$D — KHÔNG giới hạn $2000
+        # (v6.1.0: qua 2000 dòng BOOKINGS thì booking mới không bị trừ buổi). Dòng HV mới do script ghi công thức.
         ws2.cell(i,6).value = (
-            f'=COUNTIFS(BOOKINGS!$D$2:$D$2000,$B{i},BOOKINGS!$J$2:$J$2000,"Active")'
-            f'+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B{i},BOOKINGS!$J$2:$J$2000,"Completed")'
-            f'+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B{i},BOOKINGS!$J$2:$J$2000,"NoShow")')
+            f'=COUNTIFS(BOOKINGS!$D$2:$D,$B{i},BOOKINGS!$J$2:$J,"Active")'
+            f'+COUNTIFS(BOOKINGS!$D$2:$D,$B{i},BOOKINGS!$J$2:$J,"Completed")'
+            f'+COUNTIFS(BOOKINGS!$D$2:$D,$B{i},BOOKINGS!$J$2:$J,"NoShow")')
         # SessionsRemaining
         ws2.cell(i,7).value = f'=MAX(0,E{i}-F{i})'
         ws2.cell(i,8,datetime(2026,7,20)).number_format = date_fmt
@@ -249,7 +250,7 @@ def create_main():
     # ── HUONG_DAN ──
     ws7 = wb.create_sheet('HUONG_DAN')
     guide = [
-        'HƯỚNG DẪN SỬ DỤNG — thaiput v6.0 FINAL',
+        'HƯỚNG DẪN SỬ DỤNG — thaiput v6.1.0',
         '',
         'KIẾN TRÚC 3 SPREADSHEET:',
         '  1. THAIPUT_MAIN: sheet chính, chứa Apps Script — STUDENT_INFO, CHECK_SLOT, BOOKINGS (14 cột), PAYROLL',
@@ -284,8 +285,8 @@ def create_main():
         ws7.cell(i,1,line).font = Font(bold=True,size=14) if i==1 else Font(size=11)
     ws7.column_dimensions['A'].width = 80
 
-    wb.save(os.path.join(DIR,'THAIPUT_MAIN_v6.0.xlsx'))
-    print('Created THAIPUT_MAIN_v6.0.xlsx')
+    wb.save(os.path.join(DIR,'THAIPUT_MAIN_v6.1.xlsx'))
+    print('Created THAIPUT_MAIN_v6.1.xlsx')
 
 if __name__ == '__main__':
     create_registration()
