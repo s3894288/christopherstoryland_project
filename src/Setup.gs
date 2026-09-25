@@ -10,7 +10,11 @@
  *   cancelBookingRow_     idempotent (cột L đã ghi "Huỷ …" → bỏ qua, không gửi email 2 lần);
  *                         HV đang "Hết buổi" được hoàn buổi → Active
  *   processPendingCancellations  quét dòng Cancelled chưa xử lý (buổi hôm nay trở đi)
- *   testSystem            + kiểm tra công thức STUDENT_INFO, trigger heartbeat, quota email còn lại
+ *   testSystem            + kiểm tra công thức STUDENT_INFO, trigger heartbeat, quota email còn lại,
+ *                         timezone 3 spreadsheet, đủ dòng tuần active trong CHECK_SLOT + tab tutor
+ *   initializeSystem()    MỚI, menu 1: đặt timezone 3 spreadsheet, dựng lịch tháng này + 2 tuần tới,
+ *                         công thức STUDENT_INFO, sync, rồi testSystem. Template không còn chứa ngày cố định
+ *                         (trước: lịch 08/2026 → triển khai tháng khác thì dropdown trống, tutor không có chỗ điền)
  *
  * v6.0.1: menu Form thêm "Xử lý lại phản hồi bị sót (72 giờ)" → recoverMissedBookings (Main.gs)
  *
@@ -27,7 +31,7 @@
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('thaiput')
-    .addItem('1. Kiểm tra hệ thống', 'testSystem')
+    .addItem('1. Khởi tạo + kiểm tra hệ thống', 'initializeSystem')
     .addItem('2. Tạo 2 Form mới + kết nối', 'setupAllForms')
     .addItem('3. Tạo/cập nhật 8 trigger', 'createAllTriggers')
     .addItem('4. Đồng bộ slot + dropdown Form', 'heartbeat')
@@ -68,13 +72,51 @@ function onOpen() {
       .addItem('T7 · Vượt quota', 'testSimulateOverBudget')
       .addItem('T8 · Huỷ + hoàn buổi', 'testSimulateCancel')
       .addItem('T9 · Điểm danh', 'testAttendance')
-      .addItem('T10 · Archive tháng 8 → tháng 9', 'testArchiveDemo')
+      .addItem('T10 · Archive tháng trước → dựng tháng này', 'testArchiveDemo')
       .addItem('T11 · Slot đã qua bị chặn', 'testPastSlotRejected')
       .addSeparator()
       .addItem('Chạy tất cả (T0 → T11)', 'runAllTests')
       .addItem('Dọn dữ liệu test', 'resetBookings')
       .addItem('Tắt giả lập thời gian', 'clearSimulatedNow'))
     .addToUi();
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  KHỞI TẠO — chạy lần đầu và bất cứ khi nào nghi ngờ (idempotent)
+// ══════════════════════════════════════════════════════════
+
+/**
+ * 1. Timezone 3 spreadsheet = CONFIG.TIMEZONE. File XLSX upload lên Drive nhận timezone của người upload;
+ *    lệch về phía đông (VD +10) thì ngày đọc ra lùi 1 ngày → đặt nhầm ngày, quota sai.
+ * 2. Lịch: dựng tháng hiện tại + tuần active + tuần kế tiếp cho CHECK_SLOT và mọi tab tutor (giữ "x" đã có).
+ * 3. Công thức STUDENT_INFO. 4. Sync CHECK_SLOT + dropdown. 5. testSystem.
+ */
+function initializeSystem() {
+  var steps = withScriptLock_('initializeSystem', function () {
+    var out = [];
+    clearCache_();
+    var seen = {}, list = [['Main', function () { return SpreadsheetApp.getActive(); }], ['Tutor', getTutorSpreadsheet_], ['Registration', getRegistrationSpreadsheet_]];
+    for (var i = 0; i < list.length; i++) {
+      try {
+        var ss = list[i][1](); if (seen[ss.getId()]) continue; seen[ss.getId()] = true;
+        var tz = ss.getSpreadsheetTimeZone();
+        if (tz !== CONFIG.TIMEZONE) { ss.setSpreadsheetTimeZone(CONFIG.TIMEZONE); out.push('Timezone ' + list[i][0] + ': ' + tz + ' → ' + CONFIG.TIMEZONE); }
+      } catch (e) { out.push('LỖI mở spreadsheet ' + list[i][0] + ': ' + e.message); }
+    }
+    var now = getNow_();
+    getActiveWeekStart_();   // tạo ACTIVE_WEEK_START nếu chưa có
+    ensureActiveWeekCurrent_();
+    rebuildCurrentMonth(now.getFullYear(), now.getMonth() + 1);
+    ensureActiveWeekRows_();
+    out.push('Lịch: tháng ' + (now.getMonth() + 1) + '/' + now.getFullYear() + ' + tuần active + tuần kế tiếp');
+    var f = repairStudentFormulas_();
+    if (f.added || f.upgraded) out.push('Công thức STUDENT_INFO: thêm ' + f.added + ', nâng cấp ' + f.upgraded);
+    updateFormOptions();
+    return out;
+  }, function () { return ['Hệ thống đang bận, thử lại sau 1 phút']; });
+  for (var s = 0; s < steps.length; s++) Logger.log('  ' + steps[s]);
+  return testSystem();
 }
 
 
@@ -183,6 +225,7 @@ function heartbeat() {
   withScriptLock_('heartbeat', function () {
     clearCache_();
     try { ensureActiveWeekCurrent_(); } catch (e1) { errors.push('ensureActiveWeekCurrent_: ' + e1.message); }
+    try { ensureActiveWeekRows_(); } catch (e5) { errors.push('ensureActiveWeekRows_: ' + e5.message); }
     try { repairStudentFormulas_(); } catch (e2) { errors.push('repairStudentFormulas_: ' + e2.message); }
     try { processPendingCancellations_(); } catch (e3) { errors.push('processPendingCancellations_: ' + e3.message); }
     try { updateFormOptions(); } catch (e4) { errors.push('updateFormOptions: ' + e4.message); }
@@ -301,6 +344,17 @@ function testSystem() {
   var sim = PropertiesService.getScriptProperties().getProperty('SIM_NOW');
   if (sim) { Logger.log('  CẢNH BÁO SIM_NOW đang bật = ' + sim + ' → chạy clearSimulatedNow() trước khi go live'); warnings++; }
 
+  // Timezone từng spreadsheet (khác timezone project) → ngày đọc ra có thể lệch 1 ngày
+  var tzSeen = {}, tzList = [['Main', function () { return SpreadsheetApp.getActive(); }], ['Tutor', getTutorSpreadsheet_], ['Registration', getRegistrationSpreadsheet_]];
+  for (var z = 0; z < tzList.length; z++) {
+    try {
+      var zs = tzList[z][1](); if (tzSeen[zs.getId()]) continue; tzSeen[zs.getId()] = true;
+      var stz = zs.getSpreadsheetTimeZone();
+      if (stz === CONFIG.TIMEZONE) Logger.log('  OK   timezone spreadsheet ' + tzList[z][0]);
+      else { Logger.log('  LỖI  timezone spreadsheet ' + tzList[z][0] + ' = ' + stz + ' (cần ' + CONFIG.TIMEZONE + ') → menu 1. Khởi tạo'); errors++; }
+    } catch (ze) { }
+  }
+
   // Main
   var main = SpreadsheetApp.getActive();
   var mainTabs = [CONFIG.SHEETS.DASHBOARD, CONFIG.SHEETS.STUDENT_INFO, CONFIG.SHEETS.CHECK_SLOT, CONFIG.SHEETS.BOOKINGS, CONFIG.SHEETS.PAYROLL];
@@ -323,7 +377,17 @@ function testSystem() {
     var tutors = getActiveTutors_();
     Logger.log('  Tutor Active: ' + tutors.length);
     if (tutors.length === 0) { Logger.log('  LỖI  không có tutor Active'); errors++; }
-    for (var t = 0; t < tutors.length; t++) { if (!tut.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name)) { Logger.log('  LỖI  [Tutor] thiếu tab ' + CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name); errors++; } }
+    var wr = getActiveWeekRange_(), weekKeys = [];
+    for (var wd = 0; wd < 7; wd++) weekKeys.push(dateKey_(makeNoon_(wr.monday.getFullYear(), wr.monday.getMonth(), wr.monday.getDate() + wd)));
+    var missingDays = function (sh) { var have = {}, d = sh.getDataRange().getValues(); for (var r = 1; r < d.length; r++) if (d[r][0] instanceof Date) have[dateKey_(d[r][0])] = true; return weekKeys.filter(function (k) { return !have[k]; }).length; };
+    for (var t = 0; t < tutors.length; t++) {
+      var tsh = tut.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name);
+      if (!tsh) { Logger.log('  LỖI  [Tutor] thiếu tab ' + CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name); errors++; continue; }
+      var md = missingDays(tsh); if (md) { Logger.log('  LỖI  [Tutor] tab ' + tsh.getName() + ' thiếu ' + md + ' ngày tuần active → menu 1. Khởi tạo'); errors++; }
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(tutors[t].email)) { Logger.log('  CHÚ Ý tutor ' + tutors[t].name + ' email không hợp lệ ("' + tutors[t].email + '") → không nhận được lịch dạy'); warnings++; }
+    }
+    var cs = main.getSheetByName(CONFIG.SHEETS.CHECK_SLOT);
+    if (cs) { var mc = missingDays(cs); if (mc) { Logger.log('  LỖI  CHECK_SLOT thiếu ' + mc + ' ngày tuần active → menu 1. Khởi tạo'); errors++; } else Logger.log('  OK   CHECK_SLOT đủ 7 ngày tuần active'); }
   } catch (tErr) { Logger.log('  LỖI  không mở được Tutor spreadsheet: ' + tErr.message); errors++; }
 
   // Công thức STUDENT_INFO (v6.1.0): thiếu → HV không đặt được; giới hạn $2000 → quá 2000 dòng BOOKINGS thì không trừ buổi
@@ -588,20 +652,21 @@ function testAttendance() {
 // ══════════════════════════════════════════════════════════
 
 function testArchiveDemo() {
-  Logger.log('══ T10 · ARCHIVE THÁNG 8/2026 → REBUILD THÁNG 9/2026 ══');
-  var tutorSS = getTutorSpreadsheet_(), tutors = getActiveTutors_(), marksBefore = 0;
-  // Đếm "x" tháng 9 TRƯỚC rebuild để chứng minh không bị mất
-  for (var t = 0; t < tutors.length; t++) { var sh = tutorSS.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name); if (!sh) continue; var d = sh.getDataRange().getValues(); for (var r = 1; r < d.length; r++) { if (!(d[r][0] instanceof Date) || d[r][0].getMonth() !== 8) continue; for (var c = 2; c < d[r].length; c++) if (String(d[r][c]).toLowerCase() === 'x') marksBefore++; } }
-  try { archiveMonth(2026, 8); } catch (e) { Logger.log('  LỖI archive: ' + e.message); return; }
-  try { rebuildCurrentMonth(2026, 9); } catch (e2) { Logger.log('  LỖI rebuild: ' + e2.message); return; }
-  var months = listArchivedMonths();
-  Logger.log('  Archive 2026_08: ' + (months.indexOf('2026_08') >= 0 ? 'ĐẠT' : 'KHÔNG ĐẠT'));
-  var marksAfter = 0, sept = 0;
-  for (var t2 = 0; t2 < tutors.length; t2++) { var sh2 = tutorSS.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t2].name); if (!sh2) continue; var d2 = sh2.getDataRange().getValues(); for (var r2 = 1; r2 < d2.length; r2++) { if (!(d2[r2][0] instanceof Date) || d2[r2][0].getMonth() !== 8) continue; for (var c2 = 2; c2 < d2[r2].length; c2++) if (String(d2[r2][c2]).toLowerCase() === 'x') marksAfter++; } }
+  var now = getNow_(), cy = now.getFullYear(), cm = now.getMonth() + 1, py = cm === 1 ? cy - 1 : cy, pm = cm === 1 ? 12 : cm - 1;
+  var tag = py + '_' + ('0' + pm).slice(-2), days = new Date(cy, cm, 0).getDate();
+  Logger.log('══ T10 · ARCHIVE THÁNG ' + pm + '/' + py + ' → REBUILD THÁNG ' + cm + '/' + cy + ' ══');
+  var tutorSS = getTutorSpreadsheet_(), tutors = getActiveTutors_();
+  var inMonth = function (v) { return v instanceof Date && v.getFullYear() === cy && v.getMonth() === cm - 1; };
+  var countMarks = function () { var n = 0; for (var t = 0; t < tutors.length; t++) { var sh = tutorSS.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name); if (!sh) continue; var d = sh.getDataRange().getValues(); for (var r = 1; r < d.length; r++) { if (!inMonth(d[r][0])) continue; for (var c = 2; c < d[r].length; c++) if (String(d[r][c]).trim().toLowerCase() === 'x') n++; } } return n; };
+  var marksBefore = countMarks();   // đếm "x" tháng này TRƯỚC rebuild để chứng minh không bị mất
+  try { archiveMonth(py, pm); } catch (e) { Logger.log('  LỖI archive: ' + e.message); return; }
+  try { rebuildCurrentMonth(cy, cm); } catch (e2) { Logger.log('  LỖI rebuild: ' + e2.message); return; }
+  Logger.log('  Archive ' + tag + ': ' + (listArchivedMonths().indexOf(tag) >= 0 ? 'ĐẠT' : 'KHÔNG ĐẠT'));
+  var marksAfter = countMarks(), rows = 0;
   var cs = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.CHECK_SLOT).getDataRange().getValues();
-  for (var r3 = 1; r3 < cs.length; r3++) if (cs[r3][0] instanceof Date && cs[r3][0].getMonth() === 8) sept++;
-  Logger.log('  "x" tháng 9 trước/sau rebuild: ' + marksBefore + '/' + marksAfter + ' → ' + (marksAfter >= marksBefore ? 'ĐẠT (không mất lịch tutor)' : 'KHÔNG ĐẠT'));
-  Logger.log('  CHECK_SLOT dòng tháng 9: ' + sept + ' → ' + (sept >= 30 ? 'ĐẠT' : 'KHÔNG ĐẠT'));
+  for (var r3 = 1; r3 < cs.length; r3++) if (inMonth(cs[r3][0])) rows++;
+  Logger.log('  "x" tháng này trước/sau rebuild: ' + marksBefore + '/' + marksAfter + ' → ' + (marksAfter >= marksBefore ? 'ĐẠT (không mất lịch tutor)' : 'KHÔNG ĐẠT'));
+  Logger.log('  CHECK_SLOT dòng tháng này: ' + rows + '/' + days + ' → ' + (rows === days ? 'ĐẠT' : 'KHÔNG ĐẠT'));
 }
 
 function testPastSlotRejected() {

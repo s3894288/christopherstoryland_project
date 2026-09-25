@@ -4,6 +4,8 @@
  * v6.1.0: trigger CN 23:00 bị lỡ (lỗi, bận lock) trước đây để form hiện tuần CŨ suốt 7 ngày.
  *         Giờ heartbeat gọi ensureActiveWeekCurrent_() → tuần active cũ hơn tuần hiện tại thì tự
  *         chuyển trong ≤ 10 phút và báo admin. Rollover chạy trong lock.
+ *         ensureActiveWeekRows_ dựng dòng cho tuần active VÀ tuần kế tiếp: email nhắc CN bảo tutor điền
+ *         tuần sau, nhưng tuần sau vắt sang tháng mới thì trước đây chưa có dòng tới 01:00 ngày 1.
  *
  * v6.0 FIX: weeklyRollover cũ tính "thứ 2 kế tiếp" từ ngày hiện tại. Trigger Google
  * chạy lệch ±15 phút → nếu chạy lúc 00:05 thứ 2 thay vì 23:00 CN, nó nhảy sang tuần SAU NỮA.
@@ -36,9 +38,10 @@ function ensureActiveWeekCurrent_(){
   return true;
 }
 
+/** CHECK_SLOT + mọi tab tutor có đủ dòng cho 14 ngày: tuần active và tuần kế tiếp. Chạy nhiều lần an toàn. */
 function ensureActiveWeekRows_(){
   var range=getActiveWeekRange_(),needed=[];
-  for(var i=0;i<7;i++)needed.push(makeNoon_(range.monday.getFullYear(),range.monday.getMonth(),range.monday.getDate()+i));
+  for(var i=0;i<14;i++)needed.push(makeNoon_(range.monday.getFullYear(),range.monday.getMonth(),range.monday.getDate()+i));
   var addedAny=false;
   var csSheet=SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.CHECK_SLOT);
   if(csSheet)addedAny=ensureRowsInSheet_(csSheet,needed)||addedAny;
@@ -74,6 +77,7 @@ function monthlyRollover(){
 function setupMonthCalendar(year,month){rebuildCurrentMonth(year,month);}
 
 function sundayReminderTutors(){
+  try{withScriptLock_('sundayReminderTutors',ensureActiveWeekRows_);}catch(e){Logger.log('ensureActiveWeekRows_: '+e.message);}   // tab tutor phải có dòng tuần sau trước khi nhắc điền
   var today=getNow_(),nextMonday=getMondayOfWeek_(new Date(today.getTime()+24*3600000));
   if(toMidnight_(nextMonday)<=toMidnight_(today))nextMonday=makeNoon_(nextMonday.getFullYear(),nextMonday.getMonth(),nextMonday.getDate()+7);
   var nextSunday=makeNoon_(nextMonday.getFullYear(),nextMonday.getMonth(),nextMonday.getDate()+6);
