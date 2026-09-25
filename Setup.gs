@@ -1,0 +1,578 @@
+/**
+ * ============================================================
+ * Setup.gs — Cài Đặt, Trigger, Test & Bảo Trì (v6.0.1)
+ * ============================================================
+ *
+ * v6.0.1: menu Form thêm "Xử lý lại phản hồi bị sót (72 giờ)" → recoverMissedBookings (Main.gs)
+ *
+ * v6.0:
+ *   createAllTriggers()   TRƯỚC ĐÂY KHÔNG TỒN TẠI dù tài liệu bảo chạy → không trigger nào chạy
+ *   onEditTrigger         huỷ booking → xoá Calendar event + sync CHECK_SLOT + email
+ *   testSystem            kiểm tra đúng 3 spreadsheet + timezone project + SIM_NOW
+ *   testSeedStudents      T0 — nạp học viên test vào STUDENT_INFO (trước đây test dùng email không tồn tại)
+ *   testSimulateNow       giả lập đồng hồ hệ thống cho mọi scenario
+ *   Bỏ "test sandbox"     vì nó không thật sự cách ly (test vẫn ghi vào BOOKINGS thật)
+ * ============================================================
+ */
+
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('thaiput')
+    .addItem('1. Kiểm tra hệ thống', 'testSystem')
+    .addItem('2. Tạo 2 Form mới + kết nối', 'setupAllForms')
+    .addItem('3. Tạo/cập nhật 8 trigger', 'createAllTriggers')
+    .addItem('4. Đồng bộ slot + dropdown Form', 'updateFormOptions')
+    .addSeparator()
+    .addSubMenu(ui.createMenu('Form')
+      .addItem('Kết nối lại tất cả Form', 'relinkAllForms')
+      .addItem('Kết nối Form đặt lịch (nhập ID)', 'linkBookingForm')
+      .addItem('Kết nối Form đăng ký (nhập ID)', 'linkRegistrationForm')
+      .addSeparator()
+      .addItem('Xử lý lại phản hồi bị sót (72 giờ)', 'recoverMissedBookings')
+      .addItem('Kiểm tra kết nối Form', 'checkFormLinks')
+      .addItem('Dọn tab response mồ côi', 'cleanupOrphanResponseTabs'))
+    .addSubMenu(ui.createMenu('Học viên')
+      .addItem('Kích hoạt học viên đã thanh toán', 'syncRegistrations')
+      .addItem('Quét cảnh báo sắp hết buổi', 'scanAndNotifyLowBalance'))
+    .addSubMenu(ui.createMenu('Điểm danh')
+      .addItem('Chạy điểm danh (Active → Completed)', 'markCompletedSessions')
+      .addItem('Đánh NoShow (chọn dòng BOOKINGS)', 'markNoShow'))
+    .addSubMenu(ui.createMenu('Báo cáo')
+      .addItem('Payroll tháng này', 'generatePayrollThisMonth')
+      .addItem('Payroll tháng trước', 'generatePayrollLastMonth')
+      .addItem('Liệt kê tháng đã archive', 'listArchivedMonths'))
+    .addSubMenu(ui.createMenu('Lịch')
+      .addItem('Đảm bảo đủ ngày tuần active', 'ensureActiveWeekRows_')
+      .addItem('Chuyển tuần (weeklyRollover)', 'weeklyRollover')
+      .addItem('Archive + rebuild tháng (monthlyRollover)', 'monthlyRollover'))
+    .addSeparator()
+    .addSubMenu(ui.createMenu('Test')
+      .addItem('T0 · Nạp học viên test', 'testSeedStudents')
+      .addItem('T1 · Kiểm tra hệ thống', 'testSystem')
+      .addItem('T2 · Đánh x mẫu cho tutor', 'testSeedTutorAvailability')
+      .addItem('T3 · Đặt 1 buổi', 'testSimulateSubmit')
+      .addItem('T4 · 3 học viên cùng slot', 'testSimulateMultipleStudents')
+      .addItem('T5 · Hết buổi', 'testSimulateQuotaExhausted')
+      .addItem('T6 · Còn 1 buổi', 'testSimulateLowBalance')
+      .addItem('T7 · Vượt quota', 'testSimulateOverBudget')
+      .addItem('T8 · Huỷ + hoàn buổi', 'testSimulateCancel')
+      .addItem('T9 · Điểm danh', 'testAttendance')
+      .addItem('T10 · Archive tháng 8 → tháng 9', 'testArchiveDemo')
+      .addItem('T11 · Slot đã qua bị chặn', 'testPastSlotRejected')
+      .addSeparator()
+      .addItem('Chạy tất cả (T0 → T11)', 'runAllTests')
+      .addItem('Dọn dữ liệu test', 'resetBookings')
+      .addItem('Tắt giả lập thời gian', 'clearSimulatedNow'))
+    .addToUi();
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  TẠO FORM — uỷ quyền toàn bộ việc nối cho FormLink.gs
+// ══════════════════════════════════════════════════════════
+
+function setupAllForms() {
+  Logger.log('══ TẠO 2 FORM MỚI ══');
+  var regForm = FormApp.create(CONFIG.SCHOOL_NAME + ' — Đăng ký học viên');
+  regForm.setDescription(
+    'Đăng ký gói học 1:1 tại ' + CONFIG.SCHOOL_NAME + '.\n\n' +
+    'Sau khi đăng ký, bạn sẽ nhận hướng dẫn thanh toán qua email.\n' +
+    'Khi thanh toán được xác nhận, hệ thống sẽ kích hoạt tài khoản và gửi email chào mừng.');
+  regForm.setConfirmationMessage(
+    'Đăng ký đã được ghi nhận!\n\nThông tin thanh toán:\n' +
+    'Ngân hàng: ' + CONFIG.PAYMENT_INFO.BANK_NAME + '\n' +
+    'Số TK: ' + CONFIG.PAYMENT_INFO.ACCOUNT_NUMBER + '\n' +
+    'Chủ TK: ' + CONFIG.PAYMENT_INFO.ACCOUNT_HOLDER + '\n' +
+    'Nội dung CK: ' + CONFIG.PAYMENT_INFO.TRANSFER_NOTE_HINT + '\n\n' +
+    'Sau khi thanh toán được xác nhận, bạn sẽ nhận email kích hoạt tài khoản.');
+  linkFormToSystem_(regForm, FORM_KIND.REGISTRATION);
+
+  var bookForm = FormApp.create(CONFIG.SCHOOL_NAME + ' — Đăng ký lịch học 1:1');
+  bookForm.setLimitOneResponsePerUser(false);
+  bookForm.setConfirmationMessage('Đăng ký đã được ghi nhận. Kiểm tra email để nhận xác nhận kèm link phòng học.');
+  linkFormToSystem_(bookForm, FORM_KIND.BOOKING);
+
+  writeFormLinksToDashboard_(bookForm, regForm);
+  Logger.log('Form đặt lịch: ' + bookForm.getPublishedUrl());
+  Logger.log('Form đăng ký:  ' + regForm.getPublishedUrl());
+  Logger.log('ID đã lưu vào Script Properties — KHÔNG cần sửa Config.gs');
+  try {
+    SpreadsheetApp.getUi().alert('2 Form đã tạo và kết nối',
+      'Tab response đã đổi tên, trigger đã dựng, dropdown đã nạp.\nLink ghi vào DASHBOARD.\n\nTiếp theo: menu → 3. Tạo/cập nhật 8 trigger',
+      SpreadsheetApp.getUi().ButtonSet.OK);
+  } catch (uiErr) { }
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  TRIGGER — idempotent: xoá cũ cùng handler, tạo mới
+// ══════════════════════════════════════════════════════════
+
+var TIME_TRIGGERS_ = [
+  { fn: 'updateFormOptions',     build: function (b) { return b.timeBased().everyMinutes(10); } },
+  { fn: 'markCompletedSessions', build: function (b) { return b.timeBased().atHour(0).nearMinute(30).everyDays(1); } },
+  { fn: 'weeklyRollover',        build: function (b) { return b.timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(23); } },
+  { fn: 'sundayReminderTutors',  build: function (b) { return b.timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(6); } },
+  { fn: 'monthlyRollover',       build: function (b) { return b.timeBased().onMonthDay(1).atHour(1); } }
+];
+
+function createAllTriggers() {
+  Logger.log('══ TẠO 8 TRIGGER ══');
+  var ss = SpreadsheetApp.getActive(), created = 0;
+
+  // 5 time-driven
+  for (var i = 0; i < TIME_TRIGGERS_.length; i++) {
+    var t = TIME_TRIGGERS_[i];
+    deleteTriggersByHandler_(t.fn);
+    t.build(ScriptApp.newTrigger(t.fn)).inTimezone(CONFIG.TIMEZONE).create();
+    Logger.log('  OK ' + t.fn); created++;
+  }
+  // 1 on-edit (installable — simple onEdit không đủ quyền gửi mail)
+  deleteTriggersByHandler_('onEditTrigger');
+  ScriptApp.newTrigger('onEditTrigger').forSpreadsheet(ss).onEdit().create();
+  Logger.log('  OK onEditTrigger'); created++;
+  // 2 form-submit — qua FormLink để đồng thời kiểm tra kết nối
+  var kinds = [FORM_KIND.REGISTRATION, FORM_KIND.BOOKING];
+  for (var k = 0; k < kinds.length; k++) {
+    var id = getFormId_(kinds[k]);
+    if (!id) { Logger.log('  BỎ QUA ' + getFormHandler_(kinds[k]) + ' — chưa có form (chạy menu 2 hoặc Form → Kết nối)'); continue; }
+    try { rebuildFormTrigger_(FormApp.openById(id), getFormHandler_(kinds[k])); Logger.log('  OK ' + getFormHandler_(kinds[k])); created++; }
+    catch (e) { Logger.log('  LỖI ' + getFormHandler_(kinds[k]) + ': ' + e.message); }
+  }
+  Logger.log('══ ' + created + '/8 trigger ══');
+  return created;
+}
+
+function deleteTriggersByHandler_(fn) {
+  var trg = ScriptApp.getProjectTriggers(), n = 0;
+  for (var i = 0; i < trg.length; i++) if (trg[i].getHandlerFunction() === fn) { ScriptApp.deleteTrigger(trg[i]); n++; }
+  return n;
+}
+
+function listTriggers() {
+  var trg = ScriptApp.getProjectTriggers();
+  Logger.log('Có ' + trg.length + ' trigger:');
+  for (var i = 0; i < trg.length; i++) Logger.log('  ' + trg[i].getHandlerFunction() + ' · ' + trg[i].getEventType());
+  return trg.length;
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  ON EDIT — HUỶ BOOKING
+// ══════════════════════════════════════════════════════════
+
+function onEditTrigger(e) {
+  if (!e || !e.range) return;
+  var sheet = e.range.getSheet();
+  if (sheet.getName() !== CONFIG.SHEETS.BOOKINGS) return;
+  if (e.range.getColumn() !== CONFIG.BOOKING_COLS.STATUS) return;
+  var row = e.range.getRow();
+  if (row <= 1) return;
+  var newVal = String(e.value || '').trim(), oldVal = String(e.oldValue || '').trim();
+  if (newVal !== CONFIG.STATUS.CANCELLED) return;
+  if (oldVal !== CONFIG.STATUS.ACTIVE && oldVal !== CONFIG.STATUS.COMPLETED) return;
+  cancelBookingRow_(sheet, row);
+}
+
+/** Tách riêng để test được: xoá Calendar event, ghi lý do, email, sync slot. */
+function cancelBookingRow_(sheet, row) {
+  clearCache_();
+  SpreadsheetApp.flush();
+  var C = CONFIG.BOOKING_COLS, bookingRow = sheet.getRange(row, 1, 1, CONFIG.BOOKING_NUM_COLS).getValues()[0];
+  var eventId = String(bookingRow[C.EVENT_ID - 1] || '');
+  var calendarDeleted = eventId ? deleteMeetEvent_(eventId) : false;
+  if (!bookingRow[C.FAIL_REASON - 1]) {
+    sheet.getRange(row, C.FAIL_REASON).setValue('Huỷ ' + formatDateTime_(getNow_()) + ' — đã hoàn buổi' + (calendarDeleted ? ', đã xoá lịch' : ''));
+  }
+  try { sendCancelNotification(bookingRow); } catch (err) { Logger.log('Email huỷ: ' + err.message); }
+  try { updateFormOptions(); } catch (err2) { Logger.log('updateFormOptions: ' + err2.message); }
+  Logger.log('Huỷ booking dòng ' + row + ' · event ' + (eventId || '—') + (calendarDeleted ? ' đã xoá' : ''));
+  return { eventId: eventId, calendarDeleted: calendarDeleted };
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  T1 — KIỂM TRA HỆ THỐNG (3 spreadsheet)
+// ══════════════════════════════════════════════════════════
+
+function testSystem() {
+  var errors = 0, warnings = 0;
+  Logger.log('══ T1 · KIỂM TRA HỆ THỐNG v' + CONFIG.VERSION + ' ══');
+
+  // Config
+  if (CONFIG.ADMIN_EMAIL.indexOf('PASTE_') === 0) { Logger.log('  LỖI  ADMIN_EMAIL chưa điền'); errors++; }
+  if (!CONFIG.TUTOR_SS_ID) { Logger.log('  CHÚ Ý TUTOR_SS_ID trống → dùng tab trong file này'); warnings++; }
+  if (!CONFIG.REGISTRATION_SS_ID) { Logger.log('  CHÚ Ý REGISTRATION_SS_ID trống → dùng tab trong file này'); warnings++; }
+
+  // Timezone project — sai cái này thì mọi phép tính ngày lệch
+  try {
+    var tz = Session.getScriptTimeZone();
+    if (tz === CONFIG.TIMEZONE) Logger.log('  OK   timezone project = ' + tz);
+    else { Logger.log('  LỖI  timezone project = ' + tz + ' (cần ' + CONFIG.TIMEZONE + ') → Project Settings → Time zone'); errors++; }
+  } catch (tzErr) { }
+
+  // Giả lập thời gian còn bật?
+  var sim = PropertiesService.getScriptProperties().getProperty('SIM_NOW');
+  if (sim) { Logger.log('  CẢNH BÁO SIM_NOW đang bật = ' + sim + ' → chạy clearSimulatedNow() trước khi go live'); warnings++; }
+
+  // Main
+  var main = SpreadsheetApp.getActive();
+  var mainTabs = [CONFIG.SHEETS.DASHBOARD, CONFIG.SHEETS.STUDENT_INFO, CONFIG.SHEETS.CHECK_SLOT, CONFIG.SHEETS.BOOKINGS, CONFIG.SHEETS.PAYROLL];
+  for (var i = 0; i < mainTabs.length; i++) { if (main.getSheetByName(mainTabs[i])) Logger.log('  OK   [Main] ' + mainTabs[i]); else { Logger.log('  LỖI  [Main] thiếu ' + mainTabs[i]); errors++; } }
+  var bk = main.getSheetByName(CONFIG.SHEETS.BOOKINGS);
+  if (bk && bk.getLastColumn() < CONFIG.BOOKING_NUM_COLS) { Logger.log('  LỖI  BOOKINGS có ' + bk.getLastColumn() + ' cột, cần ' + CONFIG.BOOKING_NUM_COLS + ' (thêm header N: EventID)'); errors++; }
+
+  // Registration
+  try {
+    var reg = getRegistrationSpreadsheet_();
+    var regTabs = [CONFIG.SHEETS.PACKAGES, CONFIG.SHEETS.REGISTRATION];
+    for (var j = 0; j < regTabs.length; j++) { if (reg.getSheetByName(regTabs[j])) Logger.log('  OK   [Registration] ' + regTabs[j]); else { Logger.log('  LỖI  [Registration] thiếu ' + regTabs[j]); errors++; } }
+  } catch (rErr) { Logger.log('  LỖI  không mở được Registration spreadsheet: ' + rErr.message); errors++; }
+
+  // Tutor
+  try {
+    var tut = getTutorSpreadsheet_();
+    if (!tut.getSheetByName(CONFIG.SHEETS.TUTOR_INFO)) { Logger.log('  LỖI  [Tutor] thiếu TUTOR_INFO'); errors++; }
+    clearCache_();
+    var tutors = getActiveTutors_();
+    Logger.log('  Tutor Active: ' + tutors.length);
+    if (tutors.length === 0) { Logger.log('  LỖI  không có tutor Active'); errors++; }
+    for (var t = 0; t < tutors.length; t++) { if (!tut.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name)) { Logger.log('  LỖI  [Tutor] thiếu tab ' + CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name); errors++; } }
+  } catch (tErr) { Logger.log('  LỖI  không mở được Tutor spreadsheet: ' + tErr.message); errors++; }
+
+  // Form + trigger
+  if (!getBookingFormId_()) { Logger.log('  CHÚ Ý chưa có form đặt lịch (menu 2)'); warnings++; }
+  if (!getRegistrationFormId_()) { Logger.log('  CHÚ Ý chưa có form đăng ký (menu 2)'); warnings++; }
+  try { var n = ScriptApp.getProjectTriggers().length; if (n < 8) { Logger.log('  CHÚ Ý mới có ' + n + '/8 trigger (menu 3)'); warnings++; } else Logger.log('  OK   ' + n + ' trigger'); } catch (e3) { }
+
+  // Calendar
+  try { Calendar.Events.list('primary', { maxResults: 1 }); Logger.log('  OK   Calendar API'); } catch (ce) { Logger.log('  LỖI  Calendar API chưa bật (Services → + → Google Calendar API)'); errors++; }
+
+  var range = getActiveWeekRange_();
+  Logger.log('  Tuần active: ' + formatDate_(range.monday) + ' → ' + formatDate_(range.sunday));
+  Logger.log('  KẾT QUẢ: ' + errors + ' lỗi, ' + warnings + ' cảnh báo');
+  return errors;
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  TEST HELPERS
+// ══════════════════════════════════════════════════════════
+
+var TEST_NOTE_ = 'TEST_SEED';
+var TEST_STUDENTS_ = [
+  ['sim@test.com', 'Sim Student', 20], ['nocredit@test.com', 'NoCredit Test', 0], ['low@test.com', 'LowBalance Test', 2],
+  ['bao@test.com', 'Bao OverBudget', 1], ['alice@test.com', 'Alice', 5], ['bob@test.com', 'Bob', 5], ['carol@test.com', 'Carol', 5]
+];
+
+function buildFakeSubmit_(email, name, studentId, daySlotMap) {
+  var values = [getNow_().toISOString(), email, name, studentId];
+  for (var i = 0; i < CONFIG.DAY_LABELS.length; i++) values.push(daySlotMap[CONFIG.DAY_LABELS[i]] || '');
+  return { values: values };
+}
+
+/** Tìm slot tuần active có >= minAvail chỗ VÀ còn đặt được (không phải quá khứ). */
+function findAvailableSlot_(minAvail) {
+  var range = getActiveWeekRange_(), sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.CHECK_SLOT);
+  var data = sheet.getDataRange().getValues(), headers = data[0];
+  for (var d = 0; d < 7; d++) {
+    var target = makeNoon_(range.monday.getFullYear(), range.monday.getMonth(), range.monday.getDate() + d);
+    for (var r = 1; r < data.length; r++) {
+      if (!sameDate_(data[r][0], target)) continue;
+      for (var c = 2; c < headers.length; c++) {
+        var slot = String(headers[c]).trim();
+        if (Number(data[r][c]) >= minAvail && isSlotBookable_(data[r][0], slot))
+          return { date: data[r][0], timeSlot: slot, dayLabel: getDayName_(data[r][0]), available: Number(data[r][c]) };
+      }
+    }
+  }
+  return null;
+}
+
+function logLastBookings_(n) {
+  var bk = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.BOOKINGS), last = bk.getLastRow();
+  if (last <= 1) { Logger.log('  BOOKINGS trống'); return; }
+  var start = Math.max(2, last - n + 1), rows = bk.getRange(start, 1, last - start + 1, CONFIG.BOOKING_NUM_COLS).getValues(), C = CONFIG.BOOKING_COLS;
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i], dstr = (r[C.DATE - 1] instanceof Date) ? formatDate_(r[C.DATE - 1]) : r[C.DATE - 1];
+    Logger.log('    ' + r[C.STUDENT_EMAIL - 1] + ' · ' + dstr + ' ' + r[C.TIME_SLOT - 1] + ' · tutor=' + (r[C.TUTOR_NAME - 1] || '—') + ' · ' + r[C.STATUS - 1] + (r[C.FAIL_REASON - 1] ? ' · ' + r[C.FAIL_REASON - 1] : ''));
+  }
+}
+
+function logQuotaByEmail_(email, label) {
+  var q = getStudentQuotaByEmail_(email);
+  Logger.log('  ' + (label || 'Quota') + ' ' + email + ': total=' + q.total + ' used=' + q.used + ' remaining=' + q.remaining + (q.found ? '' : ' (NOT FOUND)'));
+  return q;
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  T0 — NẠP HỌC VIÊN TEST
+// ══════════════════════════════════════════════════════════
+
+function testSeedStudents() {
+  Logger.log('══ T0 · NẠP HỌC VIÊN TEST ══');
+  var info = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.STUDENT_INFO), S = CONFIG.STUDENT_COLS;
+  var idx = buildStudentEmailIndex_(), nextId = getNextStudentIdNumber_(info, { getDataRange: function () { return { getValues: function () { return [[]]; } }; } }), added = 0;
+  for (var i = 0; i < TEST_STUDENTS_.length; i++) {
+    var email = TEST_STUDENTS_[i][0];
+    if (idx[email]) { Logger.log('  Có sẵn: ' + email); continue; }
+    var row = getFirstEmptyStudentRow_(info), sid = CONFIG.ID_PREFIX.STUDENT + ('00' + nextId).slice(-3); nextId++;
+    info.getRange(row, S.STUDENT_ID).setValue(sid);
+    info.getRange(row, S.EMAIL).setValue(email);
+    info.getRange(row, S.NAME).setValue(TEST_STUDENTS_[i][1]);
+    info.getRange(row, S.PACKAGE).setValue('TEST');
+    info.getRange(row, S.TOTAL).setValue(TEST_STUDENTS_[i][2]);
+    info.getRange(row, S.ACTIVATED_AT).setValue(getNow_()).setNumberFormat('dd/MM/yyyy');
+    info.getRange(row, S.STATUS).setValue(CONFIG.STUDENT_STATUS.ACTIVE);
+    info.getRange(row, S.NOTE).setValue(TEST_NOTE_);
+    // Cột F, G phải có công thức như các dòng thật
+    info.getRange(row, S.USED).setFormula('=COUNTIFS(BOOKINGS!$D$2:$D$2000,$B' + row + ',BOOKINGS!$J$2:$J$2000,"Active")+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B' + row + ',BOOKINGS!$J$2:$J$2000,"Completed")+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B' + row + ',BOOKINGS!$J$2:$J$2000,"NoShow")');
+    info.getRange(row, S.REMAINING).setFormula('=MAX(0,E' + row + '-F' + row + ')');
+    idx[email] = { id: sid, row: row }; added++;
+  }
+  SpreadsheetApp.flush();
+  Logger.log('  Nạp ' + added + ' học viên test (ghi chú ' + TEST_NOTE_ + '). resetBookings() sẽ xoá.');
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  T2 — ĐÁNH x MẪU (vào Tutor spreadsheet)
+// ══════════════════════════════════════════════════════════
+
+function testSeedTutorAvailability() {
+  Logger.log('══ T2 · ĐÁNH x MẪU ══');
+  ensureActiveWeekRows_();
+  var range = getActiveWeekRange_(), seedSlots = ['19:00 - 19:25', '20:00 - 20:25', '21:00 - 21:25'];
+  var tutors = getActiveTutors_(), tutorSS = getTutorSpreadsheet_(), marked = 0;
+  for (var t = 0; t < tutors.length; t++) {
+    var sheet = tutorSS.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name);
+    if (!sheet) continue;
+    var data = sheet.getDataRange().getValues(), headers = data[0];
+    for (var d = 0; d < 7; d++) {
+      var target = makeNoon_(range.monday.getFullYear(), range.monday.getMonth(), range.monday.getDate() + d);
+      for (var r = 1; r < data.length; r++) {
+        if (!sameDate_(data[r][0], target)) continue;
+        for (var s = 0; s < seedSlots.length; s++)
+          for (var c = 2; c < headers.length; c++)
+            if (String(headers[c]).trim() === seedSlots[s]) { sheet.getRange(r + 1, c + 1).setValue('x'); marked++; }
+        break;
+      }
+    }
+  }
+  SpreadsheetApp.flush();
+  clearCache_();
+  Logger.log('  Tổng: ' + marked + ' ô đánh x');
+  try { updateFormOptions(); } catch (e) { }
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  T3 → T9
+// ══════════════════════════════════════════════════════════
+
+function testSimulateSubmit() {
+  Logger.log('══ T3 · ĐẶT 1 BUỔI ══');
+  var slot = findAvailableSlot_(1);
+  if (!slot) { Logger.log('  Không có slot đặt được. Chạy T2 (và kiểm tra tuần active không phải quá khứ).'); return; }
+  var before = logQuotaByEmail_('sim@test.com', 'Trước');
+  if (!before.found) { Logger.log('  Chạy T0 trước'); return; }
+  var map = {}; map[slot.dayLabel] = slot.timeSlot;
+  clearCache_(); processBooking_(buildFakeSubmit_('sim@test.com', 'Sim Student', '', map));
+  var after = logQuotaByEmail_('sim@test.com', 'Sau  ');
+  logLastBookings_(1);
+  Logger.log('  KỲ VỌNG: remaining giảm 1 → ' + (after.remaining === before.remaining - 1 ? 'ĐẠT' : 'KHÔNG ĐẠT'));
+}
+
+function testSimulateMultipleStudents() {
+  Logger.log('══ T4 · 3 HỌC VIÊN CÙNG SLOT ══');
+  var slot = findAvailableSlot_(3);
+  if (!slot) { Logger.log('  Cần ≥3 tutor rảnh cùng slot. Chạy T2 trước.'); return; }
+  var students = [['alice@test.com', 'Alice'], ['bob@test.com', 'Bob'], ['carol@test.com', 'Carol']];
+  for (var i = 0; i < students.length; i++) {
+    var map = {}; map[slot.dayLabel] = slot.timeSlot;
+    clearCache_(); processBooking_(buildFakeSubmit_(students[i][0], students[i][1], '', map));
+    Utilities.sleep(300);
+  }
+  logLastBookings_(3);
+  Logger.log('  KỲ VỌNG: 3 Active, 3 tutor KHÁC NHAU (Round Robin)');
+}
+
+function testSimulateQuotaExhausted() {
+  Logger.log('══ T5 · HẾT BUỔI ══');
+  var q = logQuotaByEmail_('nocredit@test.com', 'Trước');
+  if (!q.found) { Logger.log('  Chạy T0 trước'); return; }
+  var slot = findAvailableSlot_(1); if (!slot) { Logger.log('  Chạy T2 trước'); return; }
+  var map = {}; map[slot.dayLabel] = slot.timeSlot;
+  clearCache_(); processBooking_(buildFakeSubmit_('nocredit@test.com', 'NoCredit Test', '', map));
+  logLastBookings_(1);
+  Logger.log('  KỲ VỌNG: Failed · ' + CONFIG.FAIL_REASONS.NO_CREDITS);
+}
+
+function testSimulateLowBalance() {
+  Logger.log('══ T6 · CÒN 1 BUỔI ══');
+  var q = logQuotaByEmail_('low@test.com', 'Trước');
+  if (!q.found) { Logger.log('  Chạy T0 trước'); return; }
+  resetBalanceAlertFlagsByEmail_('low@test.com');
+  var slot = findAvailableSlot_(1); if (!slot) { Logger.log('  Chạy T2 trước'); return; }
+  var map = {}; map[slot.dayLabel] = slot.timeSlot;
+  clearCache_(); processBooking_(buildFakeSubmit_('low@test.com', 'LowBalance Test', '', map));
+  logQuotaByEmail_('low@test.com', 'Sau  ');
+  logLastBookings_(1);
+  Logger.log('  KỲ VỌNG: Active + email "Bạn còn 1 buổi"');
+}
+
+function testSimulateOverBudget() {
+  Logger.log('══ T7 · VƯỢT QUOTA (bao@test.com có 1 buổi, đặt 2 ngày) ══');
+  var q = logQuotaByEmail_('bao@test.com', 'Trước');
+  if (!q.found) { Logger.log('  Chạy T0 trước'); return; }
+  var range = getActiveWeekRange_(), sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.CHECK_SLOT);
+  var data = sheet.getDataRange().getValues(), headers = data[0], map = {}, picked = 0;
+  for (var d = 0; d < 7 && picked < 2; d++) {
+    var target = makeNoon_(range.monday.getFullYear(), range.monday.getMonth(), range.monday.getDate() + d);
+    for (var r = 1; r < data.length; r++) {
+      if (!sameDate_(data[r][0], target)) continue;
+      for (var c = 2; c < headers.length; c++) {
+        var slot = String(headers[c]).trim();
+        if (Number(data[r][c]) >= 1 && isSlotBookable_(data[r][0], slot)) { map[getDayName_(data[r][0])] = slot; picked++; break; }
+      }
+      break;
+    }
+  }
+  if (picked < 2) { Logger.log('  Cần ≥2 ngày có slot. Chạy T2 trước.'); return; }
+  clearCache_(); processBooking_(buildFakeSubmit_('bao@test.com', 'Bao OverBudget', '', map));
+  logLastBookings_(2);
+  Logger.log('  KỲ VỌNG: 1 Active + 1 Failed · ' + CONFIG.FAIL_REASONS.OVER_BUDGET);
+}
+
+function testSimulateCancel() {
+  Logger.log('══ T8 · HUỶ + HOÀN BUỔI ══');
+  var bk = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.BOOKINGS), data = bk.getDataRange().getValues(), C = CONFIG.BOOKING_COLS, targetRow = -1;
+  for (var r = data.length - 1; r >= 1; r--) if (data[r][C.STATUS - 1] === CONFIG.STATUS.ACTIVE) { targetRow = r + 1; break; }
+  if (targetRow === -1) { Logger.log('  Không có booking Active'); return; }
+  var email = data[targetRow - 1][C.STUDENT_EMAIL - 1], before = logQuotaByEmail_(email, 'Trước');
+  bk.getRange(targetRow, C.STATUS).setValue(CONFIG.STATUS.CANCELLED);
+  var res = cancelBookingRow_(bk, targetRow);
+  var after = logQuotaByEmail_(email, 'Sau  ');
+  Logger.log('  Calendar event ' + (res.eventId || '—') + (res.calendarDeleted ? ' đã xoá' : ' (không có/không xoá được)'));
+  Logger.log('  KỲ VỌNG: remaining +1 → ' + (after.remaining === before.remaining + 1 ? 'ĐẠT' : 'KHÔNG ĐẠT'));
+}
+
+function testAttendance() {
+  Logger.log('══ T9 · ĐIỂM DANH ══');
+  var bk = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.BOOKINGS), C = CONFIG.BOOKING_COLS, data = bk.getDataRange().getValues(), targetRow = -1;
+  for (var r = data.length - 1; r >= 1; r--) if (data[r][C.STATUS - 1] === CONFIG.STATUS.ACTIVE) { targetRow = r + 1; break; }
+  if (targetRow === -1) { Logger.log('  Chạy T3 trước'); return; }
+  var y = getNow_(); y.setDate(y.getDate() - 2);
+  bk.getRange(targetRow, C.DATE).setValue(new Date(y.getFullYear(), y.getMonth(), y.getDate())).setNumberFormat('dd/MM/yyyy');
+  SpreadsheetApp.flush();
+  var changed = markCompletedSessions();
+  Logger.log('  markCompletedSessions → ' + changed + ' Completed. KỲ VỌNG ≥1');
+  var d2 = bk.getDataRange().getValues();
+  for (var r2 = d2.length - 1; r2 >= 1; r2--) if (d2[r2][C.STATUS - 1] === CONFIG.STATUS.COMPLETED) { markNoShow(d2[r2][C.BOOKING_ID - 1]); Logger.log('  NoShow: ' + d2[r2][C.BOOKING_ID - 1]); break; }
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  T10 — ARCHIVE THÁNG 8 → 9  ·  T11 — SLOT ĐÃ QUA
+// ══════════════════════════════════════════════════════════
+
+function testArchiveDemo() {
+  Logger.log('══ T10 · ARCHIVE THÁNG 8/2026 → REBUILD THÁNG 9/2026 ══');
+  var tutorSS = getTutorSpreadsheet_(), tutors = getActiveTutors_(), marksBefore = 0;
+  // Đếm "x" tháng 9 TRƯỚC rebuild để chứng minh không bị mất
+  for (var t = 0; t < tutors.length; t++) { var sh = tutorSS.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name); if (!sh) continue; var d = sh.getDataRange().getValues(); for (var r = 1; r < d.length; r++) { if (!(d[r][0] instanceof Date) || d[r][0].getMonth() !== 8) continue; for (var c = 2; c < d[r].length; c++) if (String(d[r][c]).toLowerCase() === 'x') marksBefore++; } }
+  try { archiveMonth(2026, 8); } catch (e) { Logger.log('  LỖI archive: ' + e.message); return; }
+  try { rebuildCurrentMonth(2026, 9); } catch (e2) { Logger.log('  LỖI rebuild: ' + e2.message); return; }
+  var months = listArchivedMonths();
+  Logger.log('  Archive 2026_08: ' + (months.indexOf('2026_08') >= 0 ? 'ĐẠT' : 'KHÔNG ĐẠT'));
+  var marksAfter = 0, sept = 0;
+  for (var t2 = 0; t2 < tutors.length; t2++) { var sh2 = tutorSS.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t2].name); if (!sh2) continue; var d2 = sh2.getDataRange().getValues(); for (var r2 = 1; r2 < d2.length; r2++) { if (!(d2[r2][0] instanceof Date) || d2[r2][0].getMonth() !== 8) continue; for (var c2 = 2; c2 < d2[r2].length; c2++) if (String(d2[r2][c2]).toLowerCase() === 'x') marksAfter++; } }
+  var cs = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.CHECK_SLOT).getDataRange().getValues();
+  for (var r3 = 1; r3 < cs.length; r3++) if (cs[r3][0] instanceof Date && cs[r3][0].getMonth() === 8) sept++;
+  Logger.log('  "x" tháng 9 trước/sau rebuild: ' + marksBefore + '/' + marksAfter + ' → ' + (marksAfter >= marksBefore ? 'ĐẠT (không mất lịch tutor)' : 'KHÔNG ĐẠT'));
+  Logger.log('  CHECK_SLOT dòng tháng 9: ' + sept + ' → ' + (sept >= 30 ? 'ĐẠT' : 'KHÔNG ĐẠT'));
+}
+
+function testPastSlotRejected() {
+  Logger.log('══ T11 · SLOT ĐÃ QUA BỊ CHẶN ══');
+  var q = logQuotaByEmail_('sim@test.com', 'Trước');
+  if (!q.found) { Logger.log('  Chạy T0 trước'); return; }
+  var range = getActiveWeekRange_(), now = getNow_(), pastDay = null;
+  for (var d = 0; d < 7; d++) { var dt = makeNoon_(range.monday.getFullYear(), range.monday.getMonth(), range.monday.getDate() + d); if (toMidnight_(dt) < toMidnight_(now)) pastDay = dt; }
+  if (!pastDay) { Logger.log('  Tuần active chưa có ngày nào qua. Dùng testSimulateNow("2026-09-25 20:00") rồi chạy lại.'); return; }
+  var map = {}; map[getDayName_(pastDay)] = CONFIG.TIME_SLOTS[4];
+  clearCache_(); processBooking_(buildFakeSubmit_('sim@test.com', 'Sim Student', '', map));
+  var last = logQuotaByEmail_('sim@test.com', 'Sau  ');
+  logLastBookings_(1);
+  Logger.log('  KỲ VỌNG: Failed · ' + CONFIG.FAIL_REASONS.PAST_SLOT + ', quota không đổi → ' + (last.remaining === q.remaining ? 'ĐẠT' : 'KHÔNG ĐẠT'));
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  GIẢ LẬP THỜI GIAN
+// ══════════════════════════════════════════════════════════
+
+/** testSimulateNow('2026-09-22 18:30') → mọi hàm dùng getNow_() sẽ thấy giờ này. */
+function testSimulateNow(dateTimeStr) {
+  if (!dateTimeStr) { Logger.log('Cần truyền chuỗi, ví dụ testSimulateNow("2026-09-22 18:30")'); return; }
+  var m = String(dateTimeStr).match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (!m) { Logger.log('Sai định dạng. Dùng YYYY-MM-DD hoặc YYYY-MM-DD HH:mm'); return; }
+  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] || 12), Number(m[5] || 0), 0);
+  PropertiesService.getScriptProperties().setProperty('SIM_NOW', d.toISOString());
+  NOW_CACHE_ = undefined;
+  Logger.log('SIM_NOW = ' + formatDateTime_(getNow_()) + '  ⚠ nhớ clearSimulatedNow() trước khi go live');
+  try { updateDashboardStats_(); } catch (e) { }
+}
+function clearSimulatedNow() {
+  PropertiesService.getScriptProperties().deleteProperty('SIM_NOW');
+  NOW_CACHE_ = undefined;
+  Logger.log('Đã tắt giả lập thời gian. now = ' + formatDateTime_(getNow_()));
+  try { updateDashboardStats_(); } catch (e) { }
+}
+/** testSetActiveWeek('2026-09-21') → đặt tuần active thủ công (thứ 2). */
+function testSetActiveWeek(dateStr) {
+  if (!dateStr) { Logger.log('Ví dụ: testSetActiveWeek("2026-09-21")'); return; }
+  var p = String(dateStr).split('-'), monday = getMondayOfWeek_(makeNoon_(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+  setActiveWeekStart_(monday);
+  clearCache_();
+  try { ensureActiveWeekRows_(); } catch (e) { Logger.log('ensureActiveWeekRows_: ' + e.message); }
+  try { updateFormOptions(); } catch (e2) { Logger.log('updateFormOptions: ' + e2.message); }
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  CHẠY TẤT CẢ / DỌN
+// ══════════════════════════════════════════════════════════
+
+function runAllTests() {
+  Logger.log('############################################');
+  Logger.log('  TOÀN BỘ KỊCH BẢN TEST v' + CONFIG.VERSION + ' · ' + formatDateTime_(getNow_()));
+  Logger.log('############################################\n');
+  if (testSystem() > 0) { Logger.log('Sửa lỗi T1 trước.'); return; }
+  var steps = [testSeedStudents, testSeedTutorAvailability, testSimulateSubmit, testSimulateMultipleStudents, testSimulateQuotaExhausted, testSimulateLowBalance, testSimulateOverBudget, testSimulateCancel, testAttendance, testArchiveDemo, testPastSlotRejected];
+  for (var i = 0; i < steps.length; i++) { Logger.log(''); try { steps[i](); } catch (e) { Logger.log('  LỖI: ' + e.message); } }
+  Logger.log('\n############################################');
+  Logger.log('  XONG. Kiểm tra BOOKINGS, STUDENT_INFO, CHECK_SLOT, email. Rồi chạy resetBookings().');
+  Logger.log('############################################');
+}
+
+/** Xoá BOOKINGS, ĐĂNG KÝ MỚI, học viên test, cờ cảnh báo, giả lập thời gian. Quota tự hồi vì là công thức. */
+function resetBookings() {
+  var ss = SpreadsheetApp.getActive();
+  var bk = ss.getSheetByName(CONFIG.SHEETS.BOOKINGS);
+  if (bk && bk.getLastRow() > 1) { bk.deleteRows(2, bk.getLastRow() - 1); Logger.log('  Xoá BOOKINGS'); }
+  var dk = ss.getSheetByName(CONFIG.SHEETS.DANG_KY);
+  if (dk && dk.getLastRow() > 1) { dk.deleteRows(2, dk.getLastRow() - 1); Logger.log('  Xoá ĐĂNG KÝ MỚI'); }
+  var info = ss.getSheetByName(CONFIG.SHEETS.STUDENT_INFO), S = CONFIG.STUDENT_COLS, removed = 0;
+  if (info) { var d = info.getDataRange().getValues(); for (var r = d.length - 1; r >= 1; r--) if (String(d[r][S.NOTE - 1]) === TEST_NOTE_) { info.deleteRow(r + 1); removed++; } }
+  Logger.log('  Xoá ' + removed + ' học viên test');
+  var props = PropertiesService.getScriptProperties(), all = props.getProperties(), n = 0;
+  for (var k in all) if (k.indexOf('BAL_') === 0) { props.deleteProperty(k); n++; }
+  props.deleteProperty('SIM_NOW'); NOW_CACHE_ = undefined;
+  Logger.log('  Xoá ' + n + ' cờ cảnh báo, tắt giả lập thời gian');
+  SpreadsheetApp.flush();
+  clearCache_();
+  try { updateFormOptions(); } catch (e) { }
+  Logger.log('  Reset xong.');
+}

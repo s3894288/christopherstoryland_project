@@ -1,0 +1,14 @@
+{
+  "name": "thaiput-booking-system",
+  "version": "6.0.1",
+  "private": true,
+  "description": "Hệ thống đặt lịch học 1:1 cho thaiput trên Google Sheets + Apps Script",
+  "scripts": {
+    "test": "node test/harness.js && node test/formlink.test.js",
+    "test:booking": "node test/harness.js",
+    "test:formlink": "node test/formlink.test.js",
+    "push": "clasp push",
+    "pull": "clasp pull"
+  },
+  "engines": { "node": ">=18" }
+}
