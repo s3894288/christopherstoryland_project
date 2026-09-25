@@ -12,7 +12,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install openpyxl
       - name: Kiểm tra cú pháp các file .gs
         run: for f in src/*.gs; do node -e "new Function(require('fs').readFileSync('$f','utf8'))" || exit 1; done
-      - name: Chạy test (harness nghiệp vụ + FormLink)
+      - name: Fixture e2e khớp đúng 3 file XLSX trong templates/
+        run: python3 tools/export_fixture.py templates /tmp/from_committed.json && diff -u test/fixtures/templates.json /tmp/from_committed.json
+      - name: templates/ khớp tools/create_xlsx.py (không ai sửa tay file XLSX)
+        run: mkdir -p /tmp/regen && python3 tools/create_xlsx.py /tmp/regen && python3 tools/export_fixture.py /tmp/regen /tmp/from_generator.json && diff -u test/fixtures/templates.json /tmp/from_generator.json
+      - name: Chạy test (nghiệp vụ + FormLink + đầu-cuối trên template thật)
         run: npm test

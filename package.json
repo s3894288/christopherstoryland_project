@@ -4,11 +4,16 @@
   "private": true,
   "description": "Hệ thống đặt lịch học 1:1 cho thaiput trên Google Sheets + Apps Script",
   "scripts": {
-    "test": "node test/harness.js && node test/formlink.test.js",
+    "test": "node test/harness.js && node test/formlink.test.js && node test/e2e.test.js",
     "test:booking": "node test/harness.js",
     "test:formlink": "node test/formlink.test.js",
     "push": "clasp push",
-    "pull": "clasp pull"
+    "pull": "clasp pull",
+    "test:e2e": "node test/e2e.test.js",
+    "templates": "python3 tools/create_xlsx.py && python3 tools/export_fixture.py",
+    "build": "python3 tools/build_release.py"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }
