@@ -1,6 +1,6 @@
 # thaiput Booking System v6.1.0 — Tài Liệu Tổng Hợp
 
-*Build 25/09/2026 · 110/110 test hệ thống PASS · 42/42 test FormLink PASS · 12 file .gs*
+*Build 25/09/2026 · 110/110 test nghiệp vụ · 42/42 FormLink · 70/70 đầu-cuối trên template thật · 12 file .gs*
 
 > **v6.1.0:** audit độ bền và bảo mật, 15 bug (2 nghiêm trọng). Danh sách bug, cách sửa và **hướng dẫn cập nhật hệ thống đang chạy**: `docs/RELEASE_v6.1.0.md`. Tài liệu này mô tả v6.0 và đã cập nhật các mục vận hành (5, 6, 7, 11, 12) cho v6.1.0.
 
@@ -152,18 +152,18 @@ B11–B14: link + ID 2 form (script ghi). B17–B21: tuần active, bookings tu�
 
 ## 5. Triển khai từ đầu
 
-1. Upload 3 XLSX lên Google Drive → mở từng file → File → Save as Google Sheets. Có thể xoá bản .xlsx sau.
-2. Copy Spreadsheet ID của **REGISTRATION** và **TUTOR**: đoạn giữa `/d/` và `/edit` trên URL.
-3. Mở **MAIN** → Extensions → Apps Script. Xoá `Code.gs`. Tạo 12 file, dán từng file `.gs` (tên file không cần đuôi).
-4. Project Settings (bánh răng) → Time zone → **(GMT+07:00) Ho Chi Minh**. Bật "Show appsscript.json manifest" → quay lại editor → dán nội dung `appsscript.json`.
-5. Nếu manifest không tự bật Calendar: Services (+) → Google Calendar API → Add.
-6. `Config.gs`: điền `ADMIN_EMAIL`, `TUTOR_SS_ID`, `REGISTRATION_SS_ID`. Lưu (Ctrl+S).
-7. Reload tab Google Sheets của MAIN → menu **thaiput** xuất hiện → **1. Kiểm tra hệ thống** → lần đầu sẽ hỏi quyền, chấp nhận hết → chạy lại → xem log (Extensions → Apps Script → Executions) phải **0 lỗi**.
-8. Menu → **2. Tạo 2 Form mới + kết nối**. Xong: tab `ĐĂNG KÝ MỚI` và `STUDENT_REGISTRATION` đã nối form, dropdown đã nạp, link ghi DASHBOARD B11–B12.
-9. Menu → **3. Tạo/cập nhật 8 trigger**. Log phải ghi `8/8 trigger`.
-10. Menu → **Form → Kiểm tra kết nối Form** → `0 vấn đề`. Chạy **Test → Chạy tất cả**, xem log, rồi **Test → Dọn dữ liệu test**.
+Hướng dẫn từng bước (kèm chạy thử): **`docs/DEPLOY.md`**. Bộ cài đóng gói sẵn: `npm run build` → `dist/thaiput_v6.1.0.zip`.
 
-Go live: chia link form đăng ký (DASHBOARD B12) cho HV mới, link form đặt lịch (B11) cho HV đã kích hoạt. Tutor nhận link Tutor spreadsheet, chỉ cần quyền Editor trên file đó.
+Tóm tắt:
+
+1. Upload 3 XLSX lên Drive → Save as Google Sheets. Sửa PACKAGES, TUTOR_INFO, tên tab `Tutor-<Tên>`.
+2. MAIN → Extensions → Apps Script: dán 12 file `.gs` + `appsscript.json`, timezone project = Ho Chi Minh.
+3. `Config.gs`: `ADMIN_EMAIL`, `TUTOR_SS_ID`, `REGISTRATION_SS_ID`.
+4. Reload → menu **1. Khởi tạo + kiểm tra hệ thống** (đặt timezone 3 file, dựng lịch tháng này + 2 tuần tới) → **0 lỗi**.
+5. Menu **2. Tạo 2 Form** → **3. Tạo/cập nhật 8 trigger** → **Form → Kiểm tra kết nối Form** (0 vấn đề).
+6. Chạy thử: đăng ký → kích hoạt → đánh x → đặt lịch → huỷ (`docs/DEPLOY.md` mục D).
+
+Template v6.1 **không chứa ngày cố định** và không có dữ liệu giả; lịch được dựng lúc khởi tạo, sau đó heartbeat / rollover tự duy trì (tuần active + tuần kế tiếp luôn có dòng để tutor điền trước).
 
 ---
 
@@ -290,9 +290,10 @@ Giả lập thời gian: Script editor → chạy `testSimulateNow('2026-09-22 1
 | Hiện tượng | Nguyên nhân thường gặp | Xử lý |
 |---|---|---|
 | Menu thaiput không hiện | Chưa reload sheet sau khi dán code, hoặc lỗi cú pháp ở 1 file | Reload. Apps Script → chạy `testSystem` tay xem báo lỗi file nào |
-| `testSystem` báo timezone sai | Project Settings chưa đặt | Project Settings → Time zone → Ho Chi Minh |
+| `testSystem` báo timezone project sai | Project Settings chưa đặt | Project Settings → Time zone → Ho Chi Minh |
+| `testSystem` báo timezone spreadsheet sai / thiếu ngày tuần active | File XLSX upload nhận timezone người upload; chưa chạy khởi tạo | Menu **1. Khởi tạo + kiểm tra hệ thống** |
 | Booking không tự xử lý | Trigger chưa tạo hoặc form đổi | Menu 3. Tạo/cập nhật 8 trigger → Form → Kiểm tra kết nối |
-| Dropdown trống | Tutor chưa đánh "x" tuần active, hoặc tuần active lệch | TUTOR sheet kiểm tra; DASHBOARD B17 xem tuần active; menu Lịch → Chuyển tuần nếu cần |
+| Dropdown trống | Tutor chưa đánh "x" tuần active, hoặc tab tutor chưa có dòng ngày | TUTOR sheet kiểm tra; DASHBOARD B17 xem tuần active; menu **1. Khởi tạo** dựng lại ngày còn thiếu (giữ nguyên x) |
 | Booking xử lý 2 lần | Trigger trùng | Menu Form → Kiểm tra (báo số trigger) → Kết nối lại |
 | Quota sai / không hoàn khi huỷ | Cột G có giờ (gõ tay) hoặc là text | Xoá dòng gõ tay. Chỉ script được ghi BOOKINGS; admin chỉ sửa cột J |
 | "x" tutor biến mất ngày 1 | Đang chạy Archive.gs cũ (< v6.0) | Dán lại Archive.gs v6.0; lấy lại từ `_ARCHIVE_Tutor-*` |

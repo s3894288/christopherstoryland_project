@@ -64,9 +64,10 @@ Chi tiết cột từng tab: `docs/TAI_LIEU_TONG_HOP.md` mục 4.
 Cần Node.js 18 trở lên. Không cần cài package nào.
 
 ```bash
-npm test                 # cả 2 bộ
-npm run test:booking     # test/harness.js: 110 kiểm tra nghiệp vụ
+npm test                 # cả 3 bộ
+npm run test:booking     # test/harness.js: 110 kiểm tra nghiệp vụ (DB viết tay, từng kịch bản)
 npm run test:formlink    # test/formlink.test.js: 42 kiểm tra FormLink
+npm run test:e2e         # test/e2e.test.js: 70 kiểm tra đầu-cuối trên ĐÚNG 3 file XLSX mẫu
 ```
 
 GitHub Actions tự chạy `npm test` mỗi lần push / mở pull request (`.github/workflows/test.yml`).
@@ -74,6 +75,10 @@ GitHub Actions tự chạy `npm test` mỗi lần push / mở pull request (`.gi
 **Harness làm gì:** dựng bản giả của SpreadsheetApp, FormApp, CalendarApp, MailApp, PropertiesService, LockService rồi nạp các file trong `src/` để chạy thật. Không đụng dữ liệu thật, không tốn quota Google.
 
 **Giới hạn:** harness chỉ đúng khi bản giả giống thật. Bug v6.0.1 lọt qua vì harness cũ chỉ giả lập trigger Spreadsheet. Bug #1, #2 của v6.1.0 lọt qua vì harness cũ tự tính SessionsUsed cho **mọi** dòng STUDENT_INFO, kể cả dòng không có công thức. Giờ chỉ ô có công thức (map `FORMULAS`) mới được tính. Sau mỗi lần deploy vẫn phải submit form thật một lần.
+
+**Test đầu-cuối (`e2e.test.js` + `gas-mock.js`):** nạp 3 spreadsheet từ `test/fixtures/templates.json` (xuất từ `templates/*.xlsx`), đồng hồ giả múi giờ Việt Nam, rồi đi hết vòng đời như người thật: menu Khởi tạo → tạo form → trigger → đăng ký → kích hoạt → tutor đánh x → HV submit form (dropdown từ chối slot không còn, như Google Forms) → huỷ bằng onEdit → điểm danh → nhắc tutor → chuyển tuần → sang tháng → payroll. Trigger chỉ chạy nếu đã được cài. Mock gặp công thức lạ thì ném lỗi thay vì đoán.
+
+**Sửa template:** sửa `tools/create_xlsx.py` (không sửa tay file XLSX) → `npm run templates` → commit cả `templates/` và `test/fixtures/templates.json`. CI so fixture với cả file XLSX lẫn generator; lệch là đỏ.
 
 **Tiêm lỗi:** `MAIL_FAIL_TO.add(email)` làm MailApp ném lỗi khi gửi tới email đó; `CAL_FAIL = n` làm Calendar lỗi n lần tiếp theo.
 

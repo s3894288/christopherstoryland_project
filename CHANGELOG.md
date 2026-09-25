@@ -4,7 +4,7 @@ Chi tiết từng phiên bản cũ: `docs/TAI_LIEU_TONG_HOP.md` mục 9.
 
 ## v6.1.0 (25/09/2026)
 
-Audit độ bền và bảo mật: 15 bug, trong đó 2 nghiêm trọng. Chi tiết và **hướng dẫn cập nhật**: `docs/RELEASE_v6.1.0.md`
+Audit độ bền, bảo mật và đường triển khai: 20 bug, trong đó 2 nghiêm trọng. Chi tiết và **hướng dẫn cập nhật**: `docs/RELEASE_v6.1.0.md`
 
 **Sửa bug nghiêm trọng:**
 
@@ -19,7 +19,9 @@ Audit độ bền và bảo mật: 15 bug, trong đó 2 nghiêm trọng. Chi ti�
 * Đổi file: Attendance, Config, FormUpdater, Helpers, Main, MeetIntegration, Quota, Registration, Setup, WeeklyMaintenance. Giữ nguyên: Archive, FormLink
 * Template: `templates/*_v6.1.xlsx`, công thức vùng mở `$D$2:$D`
 * Repo: code vào `src/`, test vào `test/` (trước đây `npm test` lỗi); GitHub Actions, mẫu Issue / PR, `.clasp.json.example`
-* Harness: STUDENT_INFO chỉ tự tính ở dòng có công thức (trước: tính mọi dòng → che bug #1, #2); MailApp / Calendar tiêm lỗi được. Test T21 → T32. **110/110 + 42/42**
+* **Triển khai từ đầu:** template cũ chứa lịch cố định 08/2026 và dữ liệu giả; không bước nào dựng lịch tuần hiện tại → triển khai tháng khác thì dropdown trống, tutor không có chỗ điền. Giờ template sạch, menu **1. Khởi tạo + kiểm tra hệ thống** (`initializeSystem`) đặt timezone 3 spreadsheet, dựng lịch tháng này + 2 tuần tới. `ensureActiveWeekRows_` dựng cả tuần kế tiếp (trước: nhắc tutor CN điền tuần sau nhưng tuần sau vắt sang tháng mới thì chưa có dòng). `testSystem` kiểm tra timezone từng spreadsheet + đủ ngày tuần active. T10 trên sheet không còn cố định tháng 8 → 9
+* Mới: `docs/DEPLOY.md`, `npm run build` → `dist/thaiput_v6.1.0.zip` (bộ cài 1 file), `test/e2e.test.js` (70 kiểm tra đầu-cuối trên đúng file XLSX; CI kiểm tra fixture khớp XLSX + generator)
+* Harness: STUDENT_INFO chỉ tự tính ở dòng có công thức (trước: tính mọi dòng → che bug #1, #2); MailApp / Calendar tiêm lỗi được. Test T21 → T32. **110/110 + 42/42 + 70/70 e2e**
 
 ## v6.0.1 (24/09/2026) HOTFIX
 

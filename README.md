@@ -4,7 +4,7 @@
 
 Hệ thống đặt lịch học 1:1 tự động cho **thaiput** chạy trên Google Sheets, Google Forms và Apps Script. Học viên chọn giờ qua form, hệ thống tự kiểm tra số buổi còn lại, xếp tutor theo Round Robin, tạo link Google Meet và gửi email xác nhận.
 
-**Phiên bản:** 6.1.0 (25/09/2026) · **Test:** 110/110 nghiệp vụ, 42/42 FormLink
+**Phiên bản:** 6.1.0 (25/09/2026) · **Test:** 110/110 nghiệp vụ, 42/42 FormLink, 70/70 đầu-cuối trên template thật
 
 ## Tính năng
 
@@ -23,9 +23,9 @@ Hệ thống đặt lịch học 1:1 tự động cho **thaiput** chạy trên G
 
 ```
 src/          12 file .gs + appsscript.json → code chạy trong Apps Script
-test/         harness.js, formlink.test.js → kiểm tra code trên máy, không deploy
-templates/    3 file xlsx mẫu v6.1: MAIN, REGISTRATION, TUTOR
-tools/        create_xlsx.py → tạo lại 3 file mẫu
+test/         harness.js, formlink.test.js, e2e.test.js → kiểm tra code trên máy, không deploy
+templates/    3 file xlsx mẫu v6.1 (sạch, không ngày cố định): MAIN, REGISTRATION, TUTOR
+tools/        create_xlsx.py (tạo 3 file mẫu) · export_fixture.py · build_release.py (đóng gói bộ cài)
 docs/         Tài liệu tổng hợp, hướng dẫn lập trình viên, ghi chú phát hành / hotfix
 .github/      Tự chạy test mỗi lần push, mẫu báo lỗi, mẫu pull request
 ```
@@ -34,7 +34,7 @@ docs/         Tài liệu tổng hợp, hướng dẫn lập trình viên, ghi c
 
 | Mục đích | Bắt đầu từ |
 |---|---|
-| **Triển khai hệ thống mới** | `docs/TAI_LIEU_TONG_HOP.md` mục 5 (10 bước). Copy file trong `src/`, dựng Sheet từ `templates/` |
+| **Triển khai hệ thống mới** | `docs/DEPLOY.md` (từng bước + chạy thử). Bộ cài 1 file: `npm run build` → `dist/thaiput_v6.1.0.zip` |
 | **Cập nhật hệ thống đang chạy** | `CHANGELOG.md` → xem file .gs nào đổi, chỉ thay các file đó. Từ v6.0.1 lên v6.1.0: `docs/RELEASE_v6.1.0.md` mục 3 |
 | **Vận hành hằng ngày (admin)** | `docs/TAI_LIEU_TONG_HOP.md` mục 6 và 12 (troubleshooting) |
 | **Thuê coder bảo trì / phát triển** | Mời vào repo, yêu cầu đọc `docs/DEVELOPER_GUIDE.md`. Mọi thay đổi qua pull request, GitHub Actions phải xanh |
@@ -49,6 +49,13 @@ npm test
 ```
 
 Cần Node.js 18 trở lên, không cần cài thêm gì. Chi tiết: `docs/DEVELOPER_GUIDE.md` mục 4.
+
+## Đóng gói bộ cài
+
+```bash
+npm run build            # dist/thaiput_v6.1.0.zip: 3 XLSX + 12 .gs + appsscript.json + hướng dẫn
+npm run templates        # tạo lại 3 XLSX + fixture test (cần: pip install openpyxl)
+```
 
 ## Bảo mật
 

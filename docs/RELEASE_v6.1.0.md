@@ -1,10 +1,10 @@
-# thaiput v6.1.0: Audit độ bền và bảo mật
+# thaiput v6.1.0: Audit độ bền, bảo mật và triển khai
 
-Ngày: 25/09/2026 · Áp dụng cho: v6.0.1 · Test: 110/110 nghiệp vụ, 42/42 FormLink
+Ngày: 25/09/2026 · Áp dụng cho: v6.0.1 · Test: 110/110 nghiệp vụ, 42/42 FormLink, 70/70 đầu-cuối trên template thật
 
 Bản này không thêm tính năng lớn. Nó sửa những chỗ **chạy đúng trong harness nhưng sẽ hỏng khi hệ thống lớn dần hoặc gặp sự cố thật**: học viên mới không đặt được, trừ buổi sai, email lỗi làm mất bước sau, trigger bị lỡ.
 
-Mỗi bug dưới đây có test riêng trong `test/harness.js` (T21 → T32). Đã kiểm chứng: chạy harness mới trên code v6.0.1 → 38 kiểm tra FAIL; trên v6.1.0 → 0 FAIL.
+Bug #1–15 có test riêng trong `test/harness.js` (T21 → T32); bug #16–20 (đường triển khai) có trong `test/e2e.test.js`, chạy trên đúng 3 file XLSX mẫu. Đã kiểm chứng: chạy harness mới trên code v6.0.1 → 38 kiểm tra FAIL; trên v6.1.0 → 0 FAIL.
 
 ## 1. Bug đã sửa
 
@@ -25,6 +25,11 @@ Mỗi bug dưới đây có test riêng trong `test/harness.js` (T21 → T32). �
 | 13 | THẤP | Học viên trạng thái Paused vẫn đặt được | Trạng thái Paused vô tác dụng | T25 |
 | 14 | THẤP | Round Robin không tính các slot vừa đặt trong cùng 1 lần submit | Học viên chọn 7 ngày → cả 7 buổi dồn cho 1 tutor | T23 |
 | 15 | THẤP | Huỷ buổi của học viên đang "Hết buổi" | Buổi được hoàn nhưng trạng thái vẫn "Hết buổi" | T30 |
+| 16 | CAO | Template chứa lịch cố định 01/08–07/09/2026; không bước triển khai nào dựng lịch tuần hiện tại | Triển khai tháng khác: **dropdown trống, tutor không có dòng để đánh x** | e2e 1–2 |
+| 17 | CAO | Dòng ngày chỉ dựng cho tháng hiện tại + tuần active | Email CN nhắc tutor điền tuần sau, nhưng tuần sau vắt sang tháng mới thì **chưa có dòng** tới 01:00 ngày 1 | e2e 9 |
+| 18 | TRUNG BÌNH | Không kiểm tra timezone của từng spreadsheet (chỉ timezone project) | XLSX upload nhận timezone người upload; lệch về phía đông → **ngày đọc ra lùi 1 ngày** | e2e 1–2 |
+| 19 | THẤP | Template có 6 học viên, 8 đăng ký, lịch tutor giả | Dữ liệu giả lẫn vào hệ thống thật | e2e 1 |
+| 20 | THẤP | Test T10 trên sheet cố định "tháng 8 → 9/2026" | Chạy tháng khác báo sai | — |
 
 ## 2. Cải thiện khác
 
@@ -57,12 +62,12 @@ Mỗi bug dưới đây có test riêng trong `test/harness.js` (T21 → T32). �
 3. Reload Google Sheet MAIN để menu mới xuất hiện.
 4. Menu **thaiput → Học viên → Sửa công thức số buổi**. Thông báo góc phải cho biết số dòng được thêm / nâng cấp. Nếu có "dòng gõ tay": đó là ô SessionsUsed admin nhập số bằng tay, script không đụng; tự kiểm tra.
 5. Menu **thaiput → 3. Tạo/cập nhật 8 trigger**. Trigger `updateFormOptions` cũ được thay bằng `heartbeat`.
-6. Menu **thaiput → 1. Kiểm tra hệ thống** → phải **0 lỗi**.
+6. Menu **thaiput → 1. Khởi tạo + kiểm tra hệ thống** (menu 1 đổi tên; chạy lại an toàn trên hệ thống đang chạy, giữ nguyên x và booking) → phải **0 lỗi**.
 7. **Rà hậu quả bug cũ:**
    * BOOKINGS lọc Status = Failed, FailReason = "Hết buổi học — cần nạp thêm" từ khi go live: học viên nào **thực ra còn buổi** (bug #1) → liên hệ mời đặt lại.
    * Nếu BOOKINGS đã quá 2000 dòng (bug #2): sau bước 4, cột SessionsRemaining giờ đã đúng và có thể **thấp hơn** trước. Học viên nào về 0 hoặc âm thì đã học lố; trung tâm tự quyết cách xử lý.
    * PAYROLL tháng trước nếu có tutor nghỉ giữa tháng (bug #8): chạy lại **Báo cáo → Payroll tháng trước**.
-8. Test thật: submit form đặt lịch bằng email học viên test → 1 dòng Active trong BOOKINGS, email xác nhận có link Meet. Đổi dòng đó thành Cancelled → email huỷ, lịch Calendar biến mất.
+8. Test thật (hoặc làm theo `docs/DEPLOY.md` mục D): submit form đặt lịch bằng email học viên test → 1 dòng Active trong BOOKINGS, email xác nhận có link Meet. Đổi dòng đó thành Cancelled → email huỷ, lịch Calendar biến mất.
 
 **Lưu ý lần chạy heartbeat đầu:** dòng BOOKINGS đã Cancelled, có tutor, ngày từ hôm nay trở đi, mà cột FailReason **không** bắt đầu bằng "Huỷ " (chỉ có ở booking huỷ trước v6.0) sẽ được coi là huỷ bị sót: gửi email huỷ + xoá lịch. Thường là 0 dòng. Muốn chắc: lọc BOOKINGS trước bước 5.
 
