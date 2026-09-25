@@ -1,0 +1,18 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Kiểm tra cú pháp các file .gs
+        run: for f in src/*.gs; do node -e "new Function(require('fs').readFileSync('$f','utf8'))" || exit 1; done
+      - name: Chạy test (harness nghiệp vụ + FormLink)
+        run: npm test

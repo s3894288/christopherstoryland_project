@@ -4,7 +4,7 @@
 
 Hệ thống đặt lịch học 1:1 tự động cho **thaiput** chạy trên Google Sheets, Google Forms và Apps Script. Học viên chọn giờ qua form, hệ thống tự kiểm tra số buổi còn lại, xếp tutor theo Round Robin, tạo link Google Meet và gửi email xác nhận.
 
-**Phiên bản:** 6.0.1 (24/09/2026) · **Test:** 62/62 nghiệp vụ, 42/42 FormLink
+**Phiên bản:** 6.1.0 (25/09/2026) · **Test:** 110/110 nghiệp vụ, 42/42 FormLink
 
 ## Tính năng
 
@@ -16,15 +16,17 @@ Hệ thống đặt lịch học 1:1 tự động cho **thaiput** chạy trên G
 * Điểm danh Completed / NoShow, bảng lương tutor theo tháng
 * Tự chuyển tuần, archive tháng, nhắc lịch tutor Chủ nhật
 * Cứu phản hồi form bị sót (v6.0.1)
+* Tự phục hồi mỗi 10 phút: lỡ chuyển tuần, thiếu công thức số buổi, huỷ bị sót (v6.1.0)
+* Chống đặt trùng khi trigger bắn 2 lần, email an toàn trước HTML chèn vào (v6.1.0)
 
 ## Cấu trúc repo
 
 ```
 src/          12 file .gs + appsscript.json → code chạy trong Apps Script
 test/         harness.js, formlink.test.js → kiểm tra code trên máy, không deploy
-templates/    3 file xlsx mẫu: MAIN, REGISTRATION, TUTOR
+templates/    3 file xlsx mẫu v6.1: MAIN, REGISTRATION, TUTOR
 tools/        create_xlsx.py → tạo lại 3 file mẫu
-docs/         Tài liệu tổng hợp, hướng dẫn lập trình viên, ghi chú hotfix
+docs/         Tài liệu tổng hợp, hướng dẫn lập trình viên, ghi chú phát hành / hotfix
 .github/      Tự chạy test mỗi lần push, mẫu báo lỗi, mẫu pull request
 ```
 
@@ -33,7 +35,7 @@ docs/         Tài liệu tổng hợp, hướng dẫn lập trình viên, ghi c
 | Mục đích | Bắt đầu từ |
 |---|---|
 | **Triển khai hệ thống mới** | `docs/TAI_LIEU_TONG_HOP.md` mục 5 (10 bước). Copy file trong `src/`, dựng Sheet từ `templates/` |
-| **Cập nhật hệ thống đang chạy** | `CHANGELOG.md` → xem file .gs nào đổi, chỉ thay các file đó |
+| **Cập nhật hệ thống đang chạy** | `CHANGELOG.md` → xem file .gs nào đổi, chỉ thay các file đó. Từ v6.0.1 lên v6.1.0: `docs/RELEASE_v6.1.0.md` mục 3 |
 | **Vận hành hằng ngày (admin)** | `docs/TAI_LIEU_TONG_HOP.md` mục 6 và 12 (troubleshooting) |
 | **Thuê coder bảo trì / phát triển** | Mời vào repo, yêu cầu đọc `docs/DEVELOPER_GUIDE.md`. Mọi thay đổi qua pull request, GitHub Actions phải xanh |
 | **Báo lỗi / theo dõi việc cần làm** | Tab **Issues** → New issue → mẫu "Báo lỗi" |

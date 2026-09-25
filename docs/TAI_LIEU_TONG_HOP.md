@@ -1,6 +1,8 @@
-# thaiput Booking System v6.0 FINAL — Tài Liệu Tổng Hợp
+# thaiput Booking System v6.1.0 — Tài Liệu Tổng Hợp
 
-*Build 19/09/2026 · 50/50 test hệ thống PASS · 42/42 test FormLink PASS · 12 file .gs, 140 hàm, 0 trùng tên*
+*Build 25/09/2026 · 110/110 test hệ thống PASS · 42/42 test FormLink PASS · 12 file .gs*
+
+> **v6.1.0:** audit độ bền và bảo mật, 15 bug (2 nghiêm trọng). Danh sách bug, cách sửa và **hướng dẫn cập nhật hệ thống đang chạy**: `docs/RELEASE_v6.1.0.md`. Tài liệu này mô tả v6.0 và đã cập nhật các mục vận hành (5, 6, 7, 11, 12) cho v6.1.0.
 
 ---
 
@@ -15,7 +17,7 @@
 7. 8 trigger
 8. Test (T0 → T11) và harness
 9. Lịch sử phiên bản v1.0 → v6.0
-10. Nguyên tắc kỹ thuật không được phá
+10. Nguyên tắc kỹ thuật không được phá (đầy đủ 17 quy tắc: `docs/DEVELOPER_GUIDE.md` mục 3)
 11. Hạn chế còn lại và tư vấn thẳng
 12. Troubleshooting
 
@@ -102,10 +104,10 @@ Harness v6.0 **không** tự tính lại CHECK_SLOT trong `flush()`. Chỉ mô p
 `appsscript.json` — timezone HCM, Calendar advanced service, scopes. Dán qua Project Settings → "Show appsscript.json".
 
 ### 3 XLSX
-`THAIPUT_MAIN_v6.0.xlsx` (7 tab, BOOKINGS 14 cột) · `THAIPUT_REGISTRATION_v6.0.xlsx` (2 tab) · `THAIPUT_TUTOR_v6.0.xlsx` (5 tab, dữ liệu tháng 8/2026 + tuần đầu tháng 9 để test archive)
+`templates/THAIPUT_MAIN_v6.1.xlsx` (7 tab, BOOKINGS 14 cột) · `THAIPUT_REGISTRATION_v6.1.xlsx` (2 tab) · `THAIPUT_TUTOR_v6.1.xlsx` (5 tab, dữ liệu tháng 8/2026 + tuần đầu tháng 9 để test archive)
 
 ### Harness
-`harness.js` (50 assertions, mock 3 spreadsheet, Calendar lifecycle) · `formlink_test.js` (42 assertions) · `create_xlsx.py`
+`test/harness.js` (110 assertions, mock 3 spreadsheet, Calendar lifecycle, tiêm lỗi MailApp / Calendar) · `test/formlink.test.js` (42 assertions) · `tools/create_xlsx.py`
 
 ---
 
@@ -173,8 +175,11 @@ Go live: chia link form đăng ký (DASHBOARD B12) cho HV mới, link form đặ
 |---|---|
 | HV mới chuyển khoản | Mở REGISTRATION → cột E dòng đó chọn "Đã thanh toán" → Main menu **Học viên → Kích hoạt**. HV nhận email welcome kèm link đặt lịch |
 | HV nạp thêm gói | HV điền lại form đăng ký. Đánh "Đã thanh toán" → Kích hoạt. Script cộng dồn TotalSessions, reset cờ cảnh báo |
-| Huỷ buổi | BOOKINGS cột J → chọn **Cancelled**. Tự động: hoàn buổi, xoá lịch Calendar, email HV + tutor, cập nhật dropdown |
-| HV vắng không báo | Menu **Điểm danh → Đánh NoShow** khi đang chọn dòng đó. Vẫn trừ buổi, vẫn tính lương tutor |
+| Huỷ buổi | BOOKINGS cột J → chọn **Cancelled** (1 dòng hoặc dán cho nhiều dòng). Tự động: hoàn buổi, xoá lịch Calendar, email HV + tutor, cập nhật dropdown |
+| HV vắng không báo | Menu **Điểm danh → Đánh NoShow** khi đang chọn dòng đó (chọn được nhiều dòng). Vẫn trừ buổi, vẫn tính lương tutor |
+| Tạm khoá HV | STUDENT_INFO cột I → **Paused**. HV đặt sẽ nhận "Tài khoản đang tạm dừng". Đổi lại Active để mở |
+| Thêm HV bằng tay | Điền dòng mới STUDENT_INFO (ID, Email, Tên, Gói, TotalSessions). Để trống F, G: heartbeat tự ghi công thức trong 10 phút, hoặc menu **Học viên → Sửa công thức số buổi** |
+| Email "CHƯA có Google Meet" | Calendar lỗi khi tạo buổi. Tạo Meet tay trên Calendar, gửi link cho HV + tutor, dán link vào cột I |
 | Lương tháng | Menu **Báo cáo → Payroll tháng trước** → xem tab PAYROLL_REPORT |
 | Thêm tutor | TUTOR spreadsheet: thêm dòng TUTOR_INFO (Status = Active) + tạo tab `Tutor-<Tên>` (copy tab có sẵn, xoá "x"). Menu **Lịch → Đảm bảo đủ ngày tuần active** |
 | Tạm dừng tutor | TUTOR_INFO Status ≠ Active. Không xoá tab (lịch sử payroll cần) |
@@ -194,12 +199,12 @@ Chủ nhật 06:00 nhận email nhắc. Mở tab của mình trong TUTOR spreads
 |---|---|---|---|---|
 | 1 | `onRegistrationSubmit` | Form submit | khi HV đăng ký | Quét STUDENT_REGISTRATION, kích hoạt dòng "Đã thanh toán" chưa Synced |
 | 2 | `onFormSubmitTrigger` | Form submit | khi HV đặt lịch | `processBooking_` |
-| 3 | `updateFormOptions` | Time | mỗi 10 phút | sync CHECK_SLOT → dashboard → dropdown form |
+| 3 | `heartbeat` | Time | mỗi 10 phút | tự chuyển tuần nếu lỡ → bổ sung công thức STUDENT_INFO → xử lý huỷ bị sót → sync CHECK_SLOT → dashboard → dropdown form (≤ v6.0.1: `updateFormOptions`) |
 | 4 | `markCompletedSessions` | Time | 00:30 hàng ngày | Active đã qua giờ → Completed |
 | 5 | `weeklyRollover` | Time | CN 23:00 | tuần active → thứ 2 tới, thêm dòng, sync |
 | 6 | `sundayReminderTutors` | Time | CN 06:00 | email nhắc tutor điền lịch |
 | 7 | `monthlyRollover` | Time | ngày 1, 01:00 | archive tháng trước → rebuild tháng này (giữ "x") |
-| 8 | `onEditTrigger` | On edit (installable) | khi sửa ô | cột J → Cancelled ⇒ `cancelBookingRow_` |
+| 8 | `onEditTrigger` | On edit (installable) | khi sửa ô | cột J → Cancelled ⇒ `cancelBookingRow_` (dán nhiều dòng cùng lúc cũng xử lý) |
 
 Trigger 3 là "nhịp tim" của hệ thống: DASHBOARD B20 (lần sync cuối) không nhảy quá 10 phút là hệ thống đang sống.
 
@@ -248,7 +253,7 @@ Giả lập thời gian: Script editor → chạy `testSimulateNow('2026-09-22 1
 
 ---
 
-## 10. Nguyên tắc kỹ thuật không được phá
+## 10. Nguyên tắc kỹ thuật không được phá (đầy đủ 17 quy tắc: `docs/DEVELOPER_GUIDE.md` mục 3)
 
 1. **Cột G BOOKINGS luôn là `new Date(y,m,d)` midnight.** COUNTIFS so sánh serial number tuyệt đối; 12:00 vs 00:00 là 2 giá trị khác nhau → quota về 0.
 2. **Ngày hiển thị/sort dùng `makeNoon_`** (12:00) để không lùi 1 ngày khi timezone lệch.
@@ -272,7 +277,7 @@ Giả lập thời gian: Script editor → chạy `testSimulateNow('2026-09-22 1
 3. **Calendar event tạo trên lịch của tài khoản chạy script.** Admin đổi tài khoản → event cũ không xoá được từ tài khoản mới. Dùng 1 tài khoản Workspace riêng cho hệ thống (ví dụ `booking@thaiput.com`), không dùng tài khoản cá nhân.
 4. **Quota email MailApp**: Workspace 1.500/ngày. Mỗi booking gửi 2–3 email. 100 booking/ngày mới chạm. OK.
 5. **Tutor có thể gõ nhầm.** "X" hoa được chấp nhận (lowercase), "×" hay "x " có khoảng trắng: trim + lowercase xử lý. Gõ vào cột A/B thì phá dòng. Nên khoá cột A–B của tab tutor bằng Protect range.
-6. **STUDENT_INFO công thức COUNTIFS quét 2000 dòng BOOKINGS.** Sau ~1 năm với 4 tutor (~5.000 booking) sẽ chậm. Khi BOOKINGS quá 1.500 dòng: archive dòng cũ hơn 6 tháng sang tab `_ARCHIVE_BOOKINGS` và nới `$2000` lên. Chưa cần ngay.
+6. **~~STUDENT_INFO công thức COUNTIFS quét 2000 dòng BOOKINGS.~~** v6.1.0: đây là bug, không phải giới hạn: qua 2000 dòng booking mới không bị trừ buổi (Failed cũng chiếm dòng). Đã chuyển sang vùng mở `$D$2:$D`. Google Sheets xử lý COUNTIFS vùng mở tốt tới vài chục nghìn dòng; khi BOOKINGS quá ~20.000 dòng mới cần tính chuyện tách tab.
 7. **Không có backup tự động.** Google Sheets có version history 30 ngày. Đủ cho tai nạn thường; nếu muốn hơn, tạo trigger tuần copy 3 file sang folder Backup (`DriveApp.getFileById(id).makeCopy()`), 10 dòng code, tôi có thể thêm.
 8. **Round Robin "tuần" reset mỗi thứ 2.** Tutor bận thứ 2–3 sẽ hơi thiệt về lượng booking tuần đó so với tutor rảnh cả tuần. Đây là tính năng, không phải bug: HV đặt theo slot tutor mở, không thể ép cân bằng tuyệt đối.
 
@@ -295,6 +300,10 @@ Giả lập thời gian: Script editor → chạy `testSimulateNow('2026-09-22 1
 | Huỷ nhưng lịch Calendar còn | Booking tạo trước v6.0 (không có EventID) | Xoá tay trên Calendar 1 lần; booking mới tự xoá |
 | DASHBOARD B21 cảnh báo đỏ | Giả lập thời gian đang bật | Menu Test → Tắt giả lập thời gian |
 | Response form vào tab "Form Responses 1" | Form nối trước khi có FormLink | Menu Form → Kết nối lại tất cả Form |
+| HV mới đặt lịch luôn "Hết buổi học" dù đã kích hoạt | Dòng STUDENT_INFO thiếu công thức F/G (≤ v6.0.1) | Menu **Học viên → Sửa công thức số buổi**; `testSystem` báo số dòng thiếu |
+| Cột Synced (Registration) ghi "LỖI: gói … không có trong PACKAGES" | Tên gói HV chọn không khớp tab PACKAGES | Sửa tên gói ở dòng đó (hoặc điền cột G Số buổi) → menu **Học viên → Kích hoạt** |
+| Admin nhận "Tự chuyển tuần bị trễ" | Trigger weeklyRollover CN 23:00 không chạy | Heartbeat đã tự sửa. Chạy menu 3 để dựng lại trigger |
+| Executions: `heartbeat` Failed | 1 bước bảo trì lỗi (message ghi bước nào) | Các bước khác vẫn chạy. Đọc message, sửa theo bước tương ứng |
 
 ---
 

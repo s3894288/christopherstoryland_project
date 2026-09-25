@@ -1,6 +1,6 @@
 {
   "name": "thaiput-booking-system",
-  "version": "6.0.1",
+  "version": "6.1.0",
   "private": true,
   "description": "Hệ thống đặt lịch học 1:1 cho thaiput trên Google Sheets + Apps Script",
   "scripts": {

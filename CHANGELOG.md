@@ -2,6 +2,25 @@
 
 Chi tiết từng phiên bản cũ: `docs/TAI_LIEU_TONG_HOP.md` mục 9.
 
+## v6.1.0 (25/09/2026)
+
+Audit độ bền và bảo mật: 15 bug, trong đó 2 nghiêm trọng. Chi tiết và **hướng dẫn cập nhật**: `docs/RELEASE_v6.1.0.md`
+
+**Sửa bug nghiêm trọng:**
+
+* Học viên kích hoạt sau 6 dòng mẫu không có công thức số buổi → mọi lần đặt Failed "Hết buổi học"
+* Công thức COUNTIFS giới hạn 2000 dòng BOOKINGS → quá 2000 dòng thì booking mới không bị trừ buổi
+
+**Sửa bug khác:** trigger bắn 2 lần đặt trùng slot · kích hoạt học viên cộng buổi 2 lần khi chạy song song · gói sai kích hoạt 0 buổi im lặng · chèn HTML qua tên học viên vào email · BookingID trùng · payroll bỏ sót tutor đã nghỉ · 1 email lỗi chặn các bước sau · Meet lỗi không báo admin · dán Cancelled nhiều dòng bị bỏ qua · lỡ trigger chuyển tuần · Paused vẫn đặt được · Round Robin dồn slot cùng lần submit · trạng thái "Hết buổi" không tự về Active
+
+* Mới: `heartbeat()` thay `updateFormOptions` làm trigger 10 phút (tự sửa tuần, công thức, huỷ bị sót) → **chạy lại menu 3**
+* Mới: menu Học viên → Sửa công thức số buổi · Điểm danh → Xử lý các dòng huỷ bị sót
+* Mới: `withScriptLock_`, `sendMail_`, `esc_`, `loadBookingState_` (đọc BOOKINGS 1 lần / lần đặt)
+* Đổi file: Attendance, Config, FormUpdater, Helpers, Main, MeetIntegration, Quota, Registration, Setup, WeeklyMaintenance. Giữ nguyên: Archive, FormLink
+* Template: `templates/*_v6.1.xlsx`, công thức vùng mở `$D$2:$D`
+* Repo: code vào `src/`, test vào `test/` (trước đây `npm test` lỗi); GitHub Actions, mẫu Issue / PR, `.clasp.json.example`
+* Harness: STUDENT_INFO chỉ tự tính ở dòng có công thức (trước: tính mọi dòng → che bug #1, #2); MailApp / Calendar tiêm lỗi được. Test T21 → T32. **110/110 + 42/42**
+
 ## v6.0.1 (24/09/2026) HOTFIX
 
 **Sửa bug nghiêm trọng:** trigger form đặt lịch kiểu "From form" chỉ gửi `e.response`, không có `e.values`. `processBooking_` không đọc được email, thoát êm, Executions vẫn báo Completed → phản hồi của học viên bị mất.
