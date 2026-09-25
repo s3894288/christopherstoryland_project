@@ -1,5 +1,8 @@
 /**
- * FormUpdater.gs — Đồng bộ CHECK_SLOT + Dropdown Form + Dashboard (v6.0 FINAL)
+ * FormUpdater.gs — Đồng bộ CHECK_SLOT + Dropdown Form + Dashboard (v6.1.0)
+ *
+ * v6.1.0: updateFormOptions chạy trong lock (không ghi CHECK_SLOT chen giữa lúc đang đặt lịch);
+ *         mô tả form lấy khung giờ từ CONFIG.TIME_SLOTS thay vì ghi cứng
  *
  * v6.0 FIX QUAN TRỌNG: CHECK_SLOT từ v5.1 là GIÁ TRỊ (không phải công thức) vì tutor ở
  * spreadsheet khác. Nhưng processBooking_ và onEditTrigger chỉ gọi updateFormOptions(),
@@ -10,18 +13,21 @@
  * Mọi nơi gọi updateFormOptions() (booking, huỷ, rollover, trigger 10 phút) đều được sync.
  */
 function updateFormOptions(){
-  try{syncCheckSlotValues();}catch(e0){Logger.log('syncCheckSlotValues: '+e0.message);}
-  try{updateDashboardStats_();}catch(e1){}
-  var id=(typeof getBookingFormId_==='function')?getBookingFormId_():CONFIG.BOOKING_FORM_ID;
-  if(!id){Logger.log('Chưa có BOOKING_FORM_ID — menu Form → Kết nối lại tất cả Form');return;}
-  try{updateFormOptionsForForm_(FormApp.openById(id));}
-  catch(e){Logger.log('updateFormOptions: không mở được form '+id+' — '+e.message);}
+  withScriptLock_('updateFormOptions',function(){
+    try{syncCheckSlotValues();}catch(e0){Logger.log('syncCheckSlotValues: '+e0.message);}
+    try{updateDashboardStats_();}catch(e1){Logger.log('updateDashboardStats_: '+e1.message);}
+    var id=(typeof getBookingFormId_==='function')?getBookingFormId_():CONFIG.BOOKING_FORM_ID;
+    if(!id){Logger.log('Chưa có BOOKING_FORM_ID — menu Form → Kết nối lại tất cả Form');return;}
+    try{updateFormOptionsForForm_(FormApp.openById(id));}
+    catch(e){Logger.log('updateFormOptions: không mở được form '+id+' — '+e.message);}
+  });
 }
 
 function updateFormOptionsForForm_(form){
   var range=getActiveWeekRange_(),monday=toMidnight_(range.monday),sunday=toMidnight_(range.sunday);
   var tutorCount=getActiveTutors_().length;
-  form.setDescription('Tuần đăng ký: '+formatDate_(monday)+' đến '+formatDate_(sunday)+'\nKhung giờ 17:00 – 23:55 · '+tutorCount+' giảng viên\n\nĐặt lịch bằng ĐÚNG email bạn đã đăng ký học.\nChọn "'+CONFIG.NO_CHOICE_LABEL+'" cho ngày không học.\nKhung giờ đã qua hoặc dưới '+CONFIG.POLICY.MIN_LEAD_MINUTES+' phút trước giờ học sẽ không hiển thị.');
+  var TS=CONFIG.TIME_SLOTS,hours=TS[0].split(' - ')[0]+' – '+TS[TS.length-1].split(' - ')[1];
+  form.setDescription('Tuần đăng ký: '+formatDate_(monday)+' đến '+formatDate_(sunday)+'\nKhung giờ '+hours+' · '+tutorCount+' giảng viên\n\nĐặt lịch bằng ĐÚNG email bạn đã đăng ký học.\nChọn "'+CONFIG.NO_CHOICE_LABEL+'" cho ngày không học.\nKhung giờ đã qua hoặc dưới '+CONFIG.POLICY.MIN_LEAD_MINUTES+' phút trước giờ học sẽ không hiển thị.');
   var sheet=SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.CHECK_SLOT),data=sheet.getDataRange().getValues(),headers=data[0];
   var sets={};for(var d=0;d<7;d++)sets[d]={};
   for(var r=1;r<data.length;r++){var cell=data[r][0];if(!(cell instanceof Date))continue;var rowDate=toMidnight_(cell);if(rowDate<monday||rowDate>sunday)continue;var dow=rowDate.getDay(),dayIndex=(dow===0)?6:dow-1;

@@ -1,5 +1,9 @@
 /**
- * Mock harness v6.0 FINAL
+ * Mock harness v6.1.0
+ *
+ * v6.1.0: STUDENT_INFO F/G chỉ tự tính ở dòng CÓ công thức (FORMULAS), và tôn trọng giới hạn vùng
+ * ($D$2:$D$2000). Harness cũ tính cho mọi dòng → che bug "HV mới không có công thức không đặt được"
+ * và bug "quá 2000 dòng BOOKINGS thì không trừ buổi". MailApp / Calendar mock tiêm lỗi được.
  *
  * KHÁC v5.1: flush() KHÔNG tự tính lại CHECK_SLOT nữa. Google Sheets thật không tính lại
  * giá trị; chỉ syncCheckSlotValues() làm việc đó. Harness cũ che bug "CHECK_SLOT cũ 10 phút".
@@ -39,17 +43,24 @@ const REG_DB = { 'PACKAGES': [['Tên gói','Số buổi','Học phí','Ghi chú'
 
 const TUTOR_NAMES = ['Vân','Ánh','Lan','Minh'];
 function sameDay(a,b){return a instanceof Date&&b instanceof Date&&a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
-function recalcStudentQuota(){const si=MAIN_DB['STUDENT_INFO'];for(let r=1;r<si.length;r++){const email=String(si[r][1]||'').toLowerCase();let used=0;const bk=MAIN_DB['BOOKINGS'];for(let br=1;br<bk.length;br++)if(String(bk[br][3]||'').toLowerCase()===email&&['Active','Completed','NoShow'].indexOf(bk[br][9])!==-1)used++;si[r][5]=used;si[r][6]=Math.max(0,Number(si[r][4])-used);}}
+// Công thức theo ô: "TAB!row!col" → chuỗi. Chỉ ô có công thức mới được tính lại khi flush (giống Sheets thật)
+const FORMULAS={};
+const fkey=(name,row,col)=>name+'!'+row+'!'+col;
+const LEGACY_USED=r=>`=COUNTIFS(BOOKINGS!$D$2:$D$2000,$B${r},BOOKINGS!$J$2:$J$2000,"Active")+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B${r},BOOKINGS!$J$2:$J$2000,"Completed")+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B${r},BOOKINGS!$J$2:$J$2000,"NoShow")`;
+for(let r=2;r<=8;r++){FORMULAS[fkey('STUDENT_INFO',r,6)]=LEGACY_USED(r);FORMULAS[fkey('STUDENT_INFO',r,7)]=`=MAX(0,E${r}-F${r})`;}   // như sheet đang chạy v6.0.1
+function recalcStudentQuota(){const si=MAIN_DB['STUDENT_INFO'],bk=MAIN_DB['BOOKINGS'];for(let r=1;r<si.length;r++){const fU=FORMULAS[fkey('STUDENT_INFO',r+1,6)],fR=FORMULAS[fkey('STUDENT_INFO',r+1,7)];
+  if(fU){const m=fU.match(/\$D\$2:\$D\$(\d+)/),bound=m?Number(m[1]):Infinity,email=String(si[r][1]||'').toLowerCase();let used=0;for(let br=1;br<bk.length&&br+1<=bound;br++)if(String(bk[br][3]||'').toLowerCase()===email&&['Active','Completed','NoShow'].indexOf(bk[br][9])!==-1)used++;si[r][5]=used;}
+  if(fR)si[r][6]=Math.max(0,Number(si[r][4])-(Number(si[r][5])||0));}}
 
-const LOGS=[],SENT=[],PROPS={};
+const LOGS=[],SENT=[],PROPS={},MAIL_FAIL_TO=new Set();
 global.Logger={log:m=>LOGS.push(String(m))};
-global.MailApp={sendEmail:o=>SENT.push({to:o.to,subject:o.subject,cc:o.cc||''})};
+global.MailApp={sendEmail:o=>{if(MAIL_FAIL_TO.has(o.to))throw new Error('Service invoked too many times for one day: email.');SENT.push({to:o.to,subject:o.subject,cc:o.cc||'',html:o.htmlBody||''});},getRemainingDailyQuota:()=>1500};
 global.PropertiesService={getScriptProperties:()=>({getProperty:k=>(k in PROPS?PROPS[k]:null),setProperty:(k,v)=>{PROPS[k]=v;},deleteProperty:k=>{delete PROPS[k];},getProperties:()=>({...PROPS})})};
 global.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
 global.Utilities={formatDate:(d,tz,fmt)=>{const p=n=>('0'+n).slice(-2);if(fmt==='dd/MM/yyyy')return`${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()}`;if(fmt==='dd/MM/yyyy HH:mm')return`${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;return`${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;},sleep:()=>{}};
 global.Session={getScriptTimeZone:()=>'Asia/Ho_Chi_Minh'};
-let MEET_COUNTER=0;const CAL_EVENTS={};
-global.Calendar={Events:{insert:()=>{MEET_COUNTER++;const id='evt'+MEET_COUNTER;CAL_EVENTS[id]=true;return{id:id,conferenceData:{entryPoints:[{entryPointType:'video',uri:'https://meet.google.com/mock-'+MEET_COUNTER}]}};},list:()=>({items:[]}),remove:(cal,id)=>{if(!CAL_EVENTS[id])throw new Error('not found');delete CAL_EVENTS[id];}}};
+let MEET_COUNTER=0,CAL_FAIL=0;const CAL_EVENTS={};
+global.Calendar={Events:{insert:()=>{if(CAL_FAIL>0){CAL_FAIL--;throw new Error('Calendar API: backend error');}MEET_COUNTER++;const id='evt'+MEET_COUNTER;CAL_EVENTS[id]=true;return{id:id,conferenceData:{entryPoints:[{entryPointType:'video',uri:'https://meet.google.com/mock-'+MEET_COUNTER}]}};},list:()=>({items:[]}),remove:(cal,id)=>{if(!CAL_EVENTS[id])throw new Error('not found');delete CAL_EVENTS[id];}}};
 global.FORM_RESPONSES=[];
 global.FormApp={openById:()=>({getResponses:since=>FORM_RESPONSES.filter(r=>!since||r.getTimestamp()>=since)}),DestinationType:{SPREADSHEET:'S'}};
 
@@ -59,25 +70,27 @@ function makeSheet(db,name){
   if(!db[name])return null;
   const S={getName:()=>name,getDataRange:()=>({getValues:()=>db[name].map(r=>r.slice()),getNumberFormats:()=>db[name].map(r=>r.map(()=>'General'))}),getLastRow:()=>db[name].length,getLastColumn:()=>Math.max(...db[name].map(r=>r.length)),
     getRange:(a,col,numRows=1,numCols=1)=>{let row=a;if(typeof a==='string'){const m=a.match(/^([A-Z]+)(\d+)$/);col=m[1].charCodeAt(0)-64;row=Number(m[2]);}
-      const R={setValues:vals=>{for(let i=0;i<vals.length;i++){const t=row-1+i;while(db[name].length<=t)db[name].push(new Array(db[name][0].length).fill(''));for(let j=0;j<vals[i].length;j++)db[name][t][col-1+j]=vals[i][j];}return R;},
-        setValue:v=>{const t=row-1;while(db[name].length<=t)db[name].push(new Array(db[name][0].length).fill(''));db[name][t][col-1]=v;return R;},
-        getValues:()=>{const out=[];for(let i=0;i<numRows;i++){const r=db[name][row-1+i]||[];out.push(r.slice(col-1,col-1+numCols));}return out;},
+      const R={setValues:vals=>{for(let i=0;i<vals.length;i++){const t=row-1+i;while(db[name].length<=t)db[name].push(new Array(db[name][0].length).fill(''));for(let j=0;j<vals[i].length;j++){db[name][t][col-1+j]=vals[i][j];delete FORMULAS[fkey(name,t+1,col+j)];}}return R;},
+        setValue:v=>{const t=row-1;while(db[name].length<=t)db[name].push(new Array(db[name][0].length).fill(''));db[name][t][col-1]=v;delete FORMULAS[fkey(name,row,col)];return R;},
+        getValues:()=>{const out=[];for(let i=0;i<numRows;i++){const r=db[name][row-1+i]||[];const o=r.slice(col-1,col-1+numCols);while(o.length<numCols)o.push('');out.push(o);}return out;},
+        getFormula:()=>FORMULAS[fkey(name,row,col)]||'',
+        getFormulas:()=>{const out=[];for(let i=0;i<numRows;i++){const o=[];for(let j=0;j<numCols;j++)o.push(FORMULAS[fkey(name,row+i,col+j)]||'');out.push(o);}return out;},
         getValue:()=>(db[name][row-1]||[])[col-1],
         clearContent:()=>{for(let i=0;i<numRows;i++){const r=db[name][row-1+i];if(!r)continue;for(let j=0;j<numCols;j++)if(col-1+j<r.length)r[col-1+j]='';}return R;},
         sort:opt=>{const c=(opt.column||1)-1;const seg=db[name].slice(row-1,row-1+numRows);seg.sort((x,y)=>(x[c]instanceof Date&&y[c]instanceof Date)?x[c]-y[c]:0);for(let i=0;i<seg.length;i++)db[name][row-1+i]=seg[i];return R;},
-        setNumberFormat:()=>R,setNumberFormats:()=>R,setFormula:f=>{db[name][row-1][col-1]=f;return R;},setFormulas:()=>R,setFontColor:()=>R,setFontWeight:()=>R,setFontStyle:()=>R,setDataValidation:()=>R};return R;},
+        setNumberFormat:()=>R,setNumberFormats:()=>R,setFormula:f=>{const t=row-1;while(db[name].length<=t)db[name].push(new Array(db[name][0].length).fill(''));db[name][t][col-1]='';FORMULAS[fkey(name,row,col)]=f;return R;},setFormulas:()=>R,setFontColor:()=>R,setFontWeight:()=>R,setFontStyle:()=>R,setDataValidation:()=>R};return R;},
     getActiveCell:()=>null,deleteRows:(r,n)=>{db[name].splice(r-1,n);},deleteRow:r=>{db[name].splice(r-1,1);},setName:()=>{},getSheetId:()=>name,setTabColor:()=>{},hideSheet:()=>{},clearContent:()=>{}};
   return S;
 }
-function makeSS(db,id){return{getId:()=>id,getSheetByName:n=>makeSheet(db,n),getSheets:()=>Object.keys(db).map(k=>makeSheet(db,k)),insertSheet:n=>{db[n]=[['']];return makeSheet(db,n);},getUrl:()=>'https://mock/'+id};}
+function makeSS(db,id){return{toast:()=>{},getId:()=>id,getSheetByName:n=>makeSheet(db,n),getSheets:()=>Object.keys(db).map(k=>makeSheet(db,k)),insertSheet:n=>{db[n]=[['']];return makeSheet(db,n);},getUrl:()=>'https://mock/'+id};}
 global.SpreadsheetApp={getActive:()=>makeSS(MAIN_DB,'MAIN'),openById:id=>id==='TUTOR_MOCK_ID'?makeSS(TUTOR_DB,id):id==='REG_MOCK_ID'?makeSS(REG_DB,id):makeSS(MAIN_DB,'MAIN'),
   flush:()=>recalcStudentQuota(),getUi:()=>{throw new Error('no ui');},newDataValidation:()=>({requireValueInList:()=>({setAllowInvalid:()=>({build:()=>({})})})})};
 
-const files=['Config.gs','Quota.gs','Helpers.gs','MeetIntegration.gs','Main.gs','Attendance.gs','FormUpdater.gs','FormLink.gs','Archive.gs','WeeklyMaintenance.gs','Setup.gs'];
+const files=['Config.gs','Quota.gs','Helpers.gs','MeetIntegration.gs','Main.gs','Registration.gs','Attendance.gs','FormUpdater.gs','FormLink.gs','Archive.gs','WeeklyMaintenance.gs','Setup.gs'];
 let src=files.map(f=>fs.readFileSync(__dirname+'/../src/'+f,'utf8')).join('\n');
 // Trong GAS thật, updateFormOptions() = sync + dashboard + form. Ở đây không có form → giữ sync + dashboard.
 src+='\nfunction updateFormOptions(){syncCheckSlotValues();try{updateDashboardStats_();}catch(e){}}\n';
-src+='\nmodule.exports={processBooking_,getStudentQuotaByEmail_,CONFIG,formatDate_,getActiveWeekRange_,sendCancelNotification,markCompletedSessions,markNoShow,syncCheckSlotValues,cancelBookingRow_,clearCache_,testSimulateNow,clearSimulatedNow,rebuildCurrentMonth,archiveMonth,weeklyRollover,getActiveWeekStart_,generatePayrollReport,ensureFormSchema_,onFormSubmitTrigger,recoverMissedBookings};\n';
+src+='\nmodule.exports={processBooking_,getStudentQuotaByEmail_,CONFIG,formatDate_,getActiveWeekRange_,sendCancelNotification,markCompletedSessions,markNoShow,syncCheckSlotValues,cancelBookingRow_,clearCache_,testSimulateNow,clearSimulatedNow,rebuildCurrentMonth,archiveMonth,weeklyRollover,getActiveWeekStart_,generatePayrollReport,ensureFormSchema_,onFormSubmitTrigger,recoverMissedBookings,syncRegistrations,repairStudentFormulas_,onEditTrigger,processPendingCancellations_,ensureActiveWeekCurrent_,heartbeat,esc_};\n';
 const mod={exports:{}};new Function('module','exports',src)(mod,mod.exports);
 const API=mod.exports;
 API.CONFIG.ADMIN_EMAIL='admin@test.com';API.CONFIG.TUTOR_SS_ID='TUTOR_MOCK_ID';API.CONFIG.REGISTRATION_SS_ID='REG_MOCK_ID';
@@ -293,6 +306,158 @@ FORM_RESPONSES.push(mockResp('bob@test.com',dayLabel(6),'23:30 - 23:55',15,'R6')
 const rec5=API.recoverMissedBookings();
 check('Recover: phản hồi submit trước lúc đổi tuần → bỏ qua, không đặt nhầm tuần mới',[rec5.done,rec5.old>=1,MAIN_DB['BOOKINGS'].some(r=>r[3]==='bob@test.com'&&r[7]==='23:30 - 23:55')],[0,true,false]);
 delete PROPS['ACTIVE_WEEK_SET_AT'];
+
+
+// ═════════════════════════════ v6.1.0 ═════════════════════════════
+// Mỗi test dưới đây FAIL trên code v6.0.1 và PASS trên v6.1.0.
+const adminMails=()=>SENT.filter(m=>m.to==='admin@test.com');
+const bkRows=()=>MAIN_DB['BOOKINGS'].slice(1);
+const siRow=email=>MAIN_DB['STUDENT_INFO'].find(r=>String(r[1]).toLowerCase()===email);
+for(const e of ['alice@test.com','bob@test.com','carol@test.com'])siRow(e)[4]=30;SpreadsheetApp.flush();   // nạp thêm buổi cho các kịch bản sau
+function submitMap(email,name,map){const days=['Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7','Chủ nhật'];const vals=[new Date().toISOString(),email,name,''];for(const d of days)vals.push(map[d]||'');API.clearCache_();API.processBooking_({values:vals});}
+
+console.log('\n=== T21 · HV kích hoạt mới (ngoài 6 dòng mẫu) có công thức và đặt được + gói sai không kích hoạt 0 buổi ===');
+REG_DB['STUDENT_REGISTRATION'].push([new Date(),'newbie@test.com','Newbie','Gói 12 buổi','Đã thanh toán','','','','']);
+REG_DB['STUDENT_REGISTRATION'].push([new Date(),'badpkg@test.com','Bad Pkg','Gói không tồn tại','Đã thanh toán','','','','']);
+const adm21=adminMails().length;
+API.syncRegistrations();
+const newbieIdx=MAIN_DB['STUDENT_INFO'].findIndex(r=>r[1]==='newbie@test.com');
+check('Newbie có trong STUDENT_INFO',newbieIdx>0,true);
+check('Newbie có công thức F không giới hạn dòng',/\$D\$2:\$D,/.test(FORMULAS[fkey('STUDENT_INFO',newbieIdx+1,6)]||''),true);
+check('Newbie còn 12 buổi',quota('newbie@test.com').remaining,12);
+markTutor('Minh',3,'22:00 - 22:25');
+submit('newbie@test.com','Newbie',dayLabel(3),'22:00 - 22:25');
+check('Newbie đặt được buổi đầu tiên (trước: Failed "Hết buổi")',lastBookings(1)[0].status+'|'+lastBookings(1)[0].email,'Active|newbie@test.com');
+check('Newbie trừ 1 buổi',quota('newbie@test.com').remaining,11);
+const badReg=REG_DB['STUDENT_REGISTRATION'].find(r=>r[1]==='badpkg@test.com');
+check('Gói sai: KHÔNG kích hoạt',!!siRow('badpkg@test.com'),false);
+check('Gói sai: cột Synced ghi LỖI',String(badReg[8]).indexOf('LỖI')===0,true);
+check('Gói sai: admin nhận 1 email',adminMails().length,adm21+1);
+check('Ghi lại Số buổi + Học phí',REG_DB['STUDENT_REGISTRATION'].find(r=>r[1]==='newbie@test.com').slice(6,9),[12,1560000,'Yes']);
+API.syncRegistrations();
+check('Chạy lại: không báo admin lần 2, không cộng buổi lần 2',[adminMails().length,siRow('newbie@test.com')[4]],[adm21+1,12]);
+
+console.log('\n=== T22 · Trigger bắn 2 lần → không đặt trùng; đặt lại slot đang giữ → DUPLICATE ===');
+markTutor('Vân',4,'17:00 - 17:25');markTutor('Ánh',4,'17:00 - 17:25');
+const q22=quota('alice@test.com').remaining,n22=bkRows().length;
+submit('alice@test.com','Alice',dayLabel(4),'17:00 - 17:25');
+const sent22=SENT.length;
+submit('alice@test.com','Alice',dayLabel(4),'17:00 - 17:25');
+check('Lần bắn thứ 2: không thêm dòng, không trừ thêm buổi',[bkRows().length,quota('alice@test.com').remaining],[n22+1,q22-1]);
+check('Lần bắn thứ 2: không gửi email',SENT.length,sent22);
+bkRows()[bkRows().length-1][10]=new Date(Date.now()-3600*1000);   // booking đó tạo 1 giờ trước → HV cố ý đặt lại
+submit('alice@test.com','Alice',dayLabel(4),'17:00 - 17:25');
+check('Đặt lại slot đang giữ (sau 1 giờ) → Failed DUPLICATE',lastBookings(1)[0].status+'|'+lastBookings(1)[0].reason,'Failed|'+API.CONFIG.FAIL_REASONS.DUPLICATE);
+check('Quota vẫn chỉ trừ 1',quota('alice@test.com').remaining,q22-1);
+
+console.log('\n=== T23 · Round Robin tính cả slot trong CÙNG lần submit + BookingID không trùng ===');
+const wc=tid=>{const lo=new Date(MONDAY.getFullYear(),MONDAY.getMonth(),MONDAY.getDate()),hi=new Date(lo.getFullYear(),lo.getMonth(),lo.getDate()+6);return bkRows().filter(r=>r[4]===tid&&['Active','Completed','NoShow'].indexOf(r[9])!==-1&&r[6]>=lo&&r[6]<=hi).length;};
+const nRR=Math.min(7,Math.abs(wc('T003')-wc('T004'))+2),mapRR={};
+for(let d=0;d<nRR;d++){markTutor('Lan',d,'18:30 - 18:55');markTutor('Minh',d,'18:30 - 18:55');mapRR[dayLabel(d)]='18:30 - 18:55';}
+submitMap('sim@test.com','Sim',mapRR);
+check('RR: '+nRR+' slot 1 lần submit chia cho CẢ 2 tutor (trước: dồn hết 1 người)',new Set(lastBookings(nRR).map(b=>b.tutor)).size,2);
+const origRandom=Math.random;Math.random=()=>0.5;   // cố định phần ngẫu nhiên → chỉ bộ đếm giữ ID khác nhau
+const map7={};for(let d=0;d<7;d++){markTutor('Vân',d,'17:30 - 17:55');map7[dayLabel(d)]='17:30 - 17:55';}
+submitMap('sim@test.com','Sim',map7);
+Math.random=origRandom;
+const ids7=bkRows().slice(-7).map(r=>r[0]);
+check('7 slot cùng giây: 7 BookingID khác nhau',new Set(ids7).size,7);
+
+console.log('\n=== T24 · Tên HV chứa HTML bị escape trong email ===');
+markTutor('Ánh',2,'22:00 - 22:25');
+SENT.length=0;
+submit('alice@test.com','<img src=x onerror=alert(1)>',dayLabel(2),'22:00 - 22:25');
+const tutorMail24=SENT.find(m=>m.to==='anh@t.com');
+check('Email tutor có gửi',!!tutorMail24,true);
+check('Email tutor không chứa HTML thô',tutorMail24.html.indexOf('<img src=x')===-1&&tutorMail24.html.indexOf('&lt;img src=x')>=0,true);
+check('esc_',API.esc_('<a href="x">&\''),'&lt;a href=&quot;x&quot;&gt;&amp;&#39;');
+
+console.log('\n=== T25 · HV Paused không đặt được ===');
+siRow('carol@test.com')[8]='Paused';
+markTutor('Lan',3,'17:00 - 17:25');
+submit('carol@test.com','Carol',dayLabel(3),'17:00 - 17:25');
+check('Paused → Failed PAUSED',lastBookings(1)[0].status+'|'+lastBookings(1)[0].reason,'Failed|'+API.CONFIG.FAIL_REASONS.PAUSED);
+siRow('carol@test.com')[8]='Active';
+
+console.log('\n=== T26 · 1 email lỗi không chặn các bước sau ===');
+markTutor('Minh',5,'22:30 - 22:55');
+SENT.length=0;MAIL_FAIL_TO.add('bob@test.com');
+let threw26=false;try{submit('bob@test.com','Bob',dayLabel(5),'22:30 - 22:55');}catch(e){threw26=true;}
+MAIL_FAIL_TO.delete('bob@test.com');
+check('Không ném lỗi, booking vẫn Active',[threw26,lastBookings(1)[0].status],[false,'Active']);
+check('Tutor vẫn nhận email',!!SENT.find(m=>m.to==='minh@t.com'),true);
+check('Admin nhận email tổng hợp lỗi gửi',!!SENT.find(m=>m.to==='admin@test.com'&&m.subject.indexOf('email gửi không thành công')>=0),true);
+
+console.log('\n=== T27 · Tạo Meet: lỗi 1 lần → thử lại được; lỗi hết lượt → admin được báo ===');
+markTutor('Lan',4,'22:30 - 22:55');markTutor('Lan',6,'17:00 - 17:25');
+CAL_FAIL=1;submit('sim@test.com','Sim',dayLabel(4),'22:30 - 22:55');
+check('Lỗi 1 lần: thử lại → có EventID',/^evt\d+$/.test(lastBookings(1)[0].eventId),true);
+SENT.length=0;CAL_FAIL=API.CONFIG.MEET_CREATE_ATTEMPTS;submit('sim@test.com','Sim',dayLabel(6),'17:00 - 17:25');CAL_FAIL=0;
+check('Lỗi mọi lần: booking vẫn Active, chưa có EventID',[lastBookings(1)[0].status,lastBookings(1)[0].eventId],['Active','']);
+check('Admin nhận email "CHƯA có Google Meet"',!!SENT.find(m=>m.to==='admin@test.com'&&m.subject.indexOf('CHƯA có Google Meet')>=0),true);
+
+console.log('\n=== T28 · Payroll gồm tutor đã nghỉ, tổng khớp ===');
+const lanInfo=TUTOR_DB['TUTOR_INFO'].find(r=>r[0]==='T003');
+bk.push(['BKPAY1','S001','Sim','sim@test.com','T003','Lan',new Date(Y,M,1),'17:00 - 17:25','','Completed',new Date(),'','','']);
+lanInfo[3]='Inactive';API.clearCache_();
+API.generatePayrollReport(new Date(Y,M-1,1),new Date(Y,M+2,0));
+const pr28=MAIN_DB['PAYROLL_REPORT'].slice(4).filter(r=>r[0]),body28=pr28.filter(r=>r[0]!=='TỔNG CỘNG'),tot28=pr28.find(r=>r[0]==='TỔNG CỘNG');
+check('Có dòng Lan (đã nghỉ)',!!body28.find(r=>String(r[0]).indexOf('Lan')===0&&r[4]>=1),true);
+check('Tổng tiền = tổng các dòng',tot28[6],body28.reduce((a,r)=>a+Number(r[6]||0),0));
+check('Tổng billable = tổng các dòng',tot28[4],body28.reduce((a,r)=>a+Number(r[4]||0),0));
+lanInfo[3]='Active';API.clearCache_();
+
+console.log('\n=== T29 · Dán "Cancelled" nhiều dòng cùng lúc + heartbeat bắt dòng huỷ bị sót ===');
+markTutor('Vân',6,'18:00 - 18:25');markTutor('Ánh',6,'18:30 - 18:55');markTutor('Minh',6,'19:30 - 19:55');
+submitMap('bob@test.com','Bob',{[dayLabel(6)]:'18:00 - 18:25'});submitMap('alice@test.com','Alice',{[dayLabel(6)]:'18:30 - 18:55'});
+const r1=bk.length-2,r2=bk.length-1,ev1=bk[r1][13],ev2=bk[r2][13];
+bk[r1][9]='Cancelled';bk[r2][9]='Cancelled';SENT.length=0;
+const bkSheet=makeSheet(MAIN_DB,'BOOKINGS');
+const fakeRange={getSheet:()=>bkSheet,getColumn:()=>1,getNumColumns:()=>14,getRow:()=>r1+1,getNumRows:()=>2};
+API.onEditTrigger({range:fakeRange});
+check('2 dòng: đã xoá 2 event Calendar',[CAL_EVENTS[ev1],CAL_EVENTS[ev2]],[undefined,undefined]);
+check('2 dòng: cột L đánh dấu đã huỷ',[bk[r1][11].indexOf('Huỷ')===0,bk[r2][11].indexOf('Huỷ')===0],[true,true]);
+check('2 dòng: gửi email HV + tutor (4 email)',SENT.length,4);
+API.onEditTrigger({range:fakeRange});
+check('Chạy lại: idempotent, không gửi thêm',SENT.length,4);
+submitMap('carol@test.com','Carol',{[dayLabel(6)]:'19:30 - 19:55'});
+const r3=bk.length-1;bk[r3][9]='Cancelled';SENT.length=0;
+check('Heartbeat bắt 1 dòng huỷ bị sót',API.processPendingCancellations_(),1);
+check('Dòng huỷ sót: đã gửi email + xoá lịch',[SENT.length,CAL_EVENTS[bk[r3][13]]],[2,undefined]);
+
+console.log('\n=== T30 · Hết buổi → huỷ → trạng thái về Active ===');
+markTutor('Lan',6,'20:00 - 20:25');
+submit('low@test.com','Low',dayLabel(6),'20:00 - 20:25');
+check('low@ còn 0, trạng thái "Hết buổi"',[quota('low@test.com').remaining,siRow('low@test.com')[8]],[0,API.CONFIG.STUDENT_STATUS.EXHAUSTED]);
+const r30=bk.length-1;bk[r30][9]='Cancelled';API.cancelBookingRow_(bkSheet,r30+1);
+check('Sau huỷ: còn 1, trạng thái Active',[quota('low@test.com').remaining,siRow('low@test.com')[8]],[1,'Active']);
+
+console.log('\n=== T31 · Lỡ trigger chuyển tuần → heartbeat tự sửa ===');
+PROPS['ACTIVE_WEEK_START']=new Date(thisMonday.getFullYear(),thisMonday.getMonth(),thisMonday.getDate()-14,12).toISOString();
+const adm31=adminMails().length;
+check('Phát hiện tuần cũ → chuyển',API.ensureActiveWeekCurrent_(),true);
+check('Tuần active = tuần hiện tại',API.formatDate_(API.getActiveWeekStart_()),API.formatDate_(thisMonday));
+check('Admin được báo',adminMails().length,adm31+1);
+check('Tuần đã đúng → không làm gì',API.ensureActiveWeekCurrent_(),false);
+PROPS['ACTIVE_WEEK_START']=MONDAY.toISOString();
+let hbErr='';try{API.heartbeat();}catch(e){hbErr=e.message;}
+check('heartbeat() chạy trọn không lỗi',hbErr,'');
+
+console.log('\n=== T32 · Quá 2000 dòng BOOKINGS: công thức cũ không trừ buổi → sửa công thức ===');
+for(let r=2;r<=8;r++)FORMULAS[fkey('STUDENT_INFO',r,6)]=LEGACY_USED(r);   // T31 heartbeat đã tự sửa → đặt lại công thức cũ để tái hiện
+while(bk.length<2001)bk.push(['FILL'+bk.length,'','Filler','filler@test.com','','',new Date(wk(-7).getFullYear(),wk(-7).getMonth(),wk(-7).getDate()),'17:00 - 17:25','','Failed',new Date(),'filler','','']);
+markTutor('Ánh',5,'23:30 - 23:55');
+const q32=quota('bob@test.com').remaining;
+submit('bob@test.com','Bob',dayLabel(5),'23:30 - 23:55');
+check('Booking dòng > 2000 Active',lastBookings(1)[0].status,'Active');
+check('Tái hiện bug: công thức $2000 không trừ buổi',quota('bob@test.com').remaining,q32);
+siRow('sim@test.com')[5]=3;delete FORMULAS[fkey('STUDENT_INFO',2,6)];   // dòng sim: số gõ tay → không được đụng
+const rep32=API.repairStudentFormulas_();
+API.clearCache_();SpreadsheetApp.flush();
+check('Sửa công thức: nâng cấp 6 dòng cũ, bỏ qua 1 dòng gõ tay',[rep32.upgraded,rep32.manual],[6,[2]]);
+check('Sau sửa: trừ đúng 1 buổi',quota('bob@test.com').remaining,q32-1);
+check('Dòng gõ tay giữ nguyên',siRow('sim@test.com')[5],3);
+check('HV kích hoạt mới (T21) đếm đúng dù > 2000 dòng',quota('newbie@test.com').remaining,11);
 
 console.log(`\n────────────────────────────────────`);
 console.log(`  KẾT QUẢ: ${pass} PASS · ${fail} FAIL`);

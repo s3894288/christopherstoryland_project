@@ -1,7 +1,16 @@
 /**
  * ============================================================
- * Setup.gs — Cài Đặt, Trigger, Test & Bảo Trì (v6.0.1)
+ * Setup.gs — Cài Đặt, Trigger, Test & Bảo Trì (v6.1.0)
  * ============================================================
+ *
+ * v6.1.0:
+ *   heartbeat()           thay updateFormOptions làm trigger 10 phút: tự chuyển tuần nếu trigger CN bị lỡ,
+ *                         bổ sung công thức STUDENT_INFO thiếu, xử lý huỷ bị sót, rồi sync như cũ
+ *   onEditTrigger         dán "Cancelled" cho NHIỀU dòng cùng lúc → xử lý từng dòng (trước: bỏ qua cả khối)
+ *   cancelBookingRow_     idempotent (cột L đã ghi "Huỷ …" → bỏ qua, không gửi email 2 lần);
+ *                         HV đang "Hết buổi" được hoàn buổi → Active
+ *   processPendingCancellations  quét dòng Cancelled chưa xử lý (buổi hôm nay trở đi)
+ *   testSystem            + kiểm tra công thức STUDENT_INFO, trigger heartbeat, quota email còn lại
  *
  * v6.0.1: menu Form thêm "Xử lý lại phản hồi bị sót (72 giờ)" → recoverMissedBookings (Main.gs)
  *
@@ -21,7 +30,7 @@ function onOpen() {
     .addItem('1. Kiểm tra hệ thống', 'testSystem')
     .addItem('2. Tạo 2 Form mới + kết nối', 'setupAllForms')
     .addItem('3. Tạo/cập nhật 8 trigger', 'createAllTriggers')
-    .addItem('4. Đồng bộ slot + dropdown Form', 'updateFormOptions')
+    .addItem('4. Đồng bộ slot + dropdown Form', 'heartbeat')
     .addSeparator()
     .addSubMenu(ui.createMenu('Form')
       .addItem('Kết nối lại tất cả Form', 'relinkAllForms')
@@ -33,10 +42,12 @@ function onOpen() {
       .addItem('Dọn tab response mồ côi', 'cleanupOrphanResponseTabs'))
     .addSubMenu(ui.createMenu('Học viên')
       .addItem('Kích hoạt học viên đã thanh toán', 'syncRegistrations')
-      .addItem('Quét cảnh báo sắp hết buổi', 'scanAndNotifyLowBalance'))
+      .addItem('Quét cảnh báo sắp hết buổi', 'scanAndNotifyLowBalance')
+      .addItem('Sửa công thức số buổi (STUDENT_INFO)', 'repairStudentFormulas'))
     .addSubMenu(ui.createMenu('Điểm danh')
       .addItem('Chạy điểm danh (Active → Completed)', 'markCompletedSessions')
-      .addItem('Đánh NoShow (chọn dòng BOOKINGS)', 'markNoShow'))
+      .addItem('Đánh NoShow (chọn dòng BOOKINGS)', 'markNoShow')
+      .addItem('Xử lý các dòng huỷ bị sót', 'processPendingCancellations'))
     .addSubMenu(ui.createMenu('Báo cáo')
       .addItem('Payroll tháng này', 'generatePayrollThisMonth')
       .addItem('Payroll tháng trước', 'generatePayrollLastMonth')
@@ -109,7 +120,7 @@ function setupAllForms() {
 // ══════════════════════════════════════════════════════════
 
 var TIME_TRIGGERS_ = [
-  { fn: 'updateFormOptions',     build: function (b) { return b.timeBased().everyMinutes(10); } },
+  { fn: 'heartbeat',             build: function (b) { return b.timeBased().everyMinutes(10); } },
   { fn: 'markCompletedSessions', build: function (b) { return b.timeBased().atHour(0).nearMinute(30).everyDays(1); } },
   { fn: 'weeklyRollover',        build: function (b) { return b.timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(23); } },
   { fn: 'sundayReminderTutors',  build: function (b) { return b.timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(6); } },
@@ -119,6 +130,7 @@ var TIME_TRIGGERS_ = [
 function createAllTriggers() {
   Logger.log('══ TẠO 8 TRIGGER ══');
   var ss = SpreadsheetApp.getActive(), created = 0;
+  deleteTriggersByHandler_('updateFormOptions');   // trigger 10 phút cũ (≤ v6.0.1) → thay bằng heartbeat
 
   // 5 time-driven
   for (var i = 0; i < TIME_TRIGGERS_.length; i++) {
@@ -140,6 +152,7 @@ function createAllTriggers() {
     catch (e) { Logger.log('  LỖI ' + getFormHandler_(kinds[k]) + ': ' + e.message); }
   }
   Logger.log('══ ' + created + '/8 trigger ══');
+  toast_('Đã tạo ' + created + '/8 trigger' + (created < 8 ? ' — xem log: form nào chưa kết nối' : ''));
   return created;
 }
 
@@ -158,36 +171,109 @@ function listTriggers() {
 
 
 // ══════════════════════════════════════════════════════════
+//  HEARTBEAT — trigger 10 phút
+// ══════════════════════════════════════════════════════════
+
+/**
+ * Nhịp tim hệ thống. Mỗi bước độc lập: bước nào lỗi vẫn chạy các bước sau, cuối cùng ném lỗi
+ * để Executions hiện Failed (và Google gửi email báo lỗi trigger cho chủ script).
+ */
+function heartbeat() {
+  var errors = [];
+  withScriptLock_('heartbeat', function () {
+    clearCache_();
+    try { ensureActiveWeekCurrent_(); } catch (e1) { errors.push('ensureActiveWeekCurrent_: ' + e1.message); }
+    try { repairStudentFormulas_(); } catch (e2) { errors.push('repairStudentFormulas_: ' + e2.message); }
+    try { processPendingCancellations_(); } catch (e3) { errors.push('processPendingCancellations_: ' + e3.message); }
+    try { updateFormOptions(); } catch (e4) { errors.push('updateFormOptions: ' + e4.message); }
+  });
+  if (errors.length) throw new Error('heartbeat: ' + errors.join(' | '));
+}
+
+
+// ══════════════════════════════════════════════════════════
 //  ON EDIT — HUỶ BOOKING
 // ══════════════════════════════════════════════════════════
 
 function onEditTrigger(e) {
   if (!e || !e.range) return;
-  var sheet = e.range.getSheet();
+  var rg = e.range, sheet = rg.getSheet();
   if (sheet.getName() !== CONFIG.SHEETS.BOOKINGS) return;
-  if (e.range.getColumn() !== CONFIG.BOOKING_COLS.STATUS) return;
-  var row = e.range.getRow();
-  if (row <= 1) return;
-  var newVal = String(e.value || '').trim(), oldVal = String(e.oldValue || '').trim();
-  if (newVal !== CONFIG.STATUS.CANCELLED) return;
-  if (oldVal !== CONFIG.STATUS.ACTIVE && oldVal !== CONFIG.STATUS.COMPLETED) return;
-  cancelBookingRow_(sheet, row);
+  var col = CONFIG.BOOKING_COLS.STATUS, c0 = rg.getColumn(), c1 = c0 + rg.getNumColumns() - 1;
+  if (col < c0 || col > c1) return;
+  var r0 = Math.max(2, rg.getRow()), r1 = rg.getRow() + rg.getNumRows() - 1;
+  if (r1 < r0) return;
+  var single = rg.getNumRows() === 1 && rg.getNumColumns() === 1;
+  withScriptLock_('onEditTrigger', function () {
+    if (single) {
+      // 1 ô: có oldValue → chỉ huỷ khi chuyển từ Active / Completed
+      var newVal = String(e.value || '').trim(), oldVal = String(e.oldValue || '').trim();
+      if (newVal !== CONFIG.STATUS.CANCELLED) return;
+      if (oldVal !== CONFIG.STATUS.ACTIVE && oldVal !== CONFIG.STATUS.COMPLETED) return;
+      cancelBookingRow_(sheet, r0);
+    } else {
+      // Dán / kéo nhiều ô: không có oldValue → dựa vào dấu hiệu dòng chưa xử lý huỷ, chỉ buổi từ hôm nay
+      processCancellationsInRows_(sheet, r0, r1, getNow_());
+    }
+  }, function () {
+    notifyAdminError_('Huỷ booking chưa xử lý (hệ thống bận)', new Error('Dòng ' + r0 + (r1 > r0 ? '–' + r1 : '') + ' BOOKINGS. Heartbeat 10 phút sẽ tự xử lý, hoặc menu Điểm danh → Xử lý các dòng huỷ bị sót.'), null);
+  });
 }
 
-/** Tách riêng để test được: xoá Calendar event, ghi lý do, email, sync slot. */
-function cancelBookingRow_(sheet, row) {
+/** Dòng Cancelled có tutor (từng là booking thật) và cột L chưa ghi "Huỷ …" → chưa gửi email / xoá lịch. */
+function isPendingCancellation_(r) {
+  var C = CONFIG.BOOKING_COLS;
+  return String(r[C.STATUS - 1] || '').trim() === CONFIG.STATUS.CANCELLED && !!String(r[C.TUTOR_ID - 1] || '').trim() &&
+    String(r[C.FAIL_REASON - 1] || '').indexOf(CONFIG.CANCEL_NOTE_PREFIX) !== 0;
+}
+
+/** Huỷ các dòng đang chờ trong [r0, r1]. fromDate: chỉ xử lý buổi từ ngày này (null = mọi ngày). Sync 1 lần ở cuối. */
+function processCancellationsInRows_(sheet, r0, r1, fromDate) {
+  var C = CONFIG.BOOKING_COLS, data = sheet.getRange(r0, 1, r1 - r0 + 1, CONFIG.BOOKING_NUM_COLS).getValues(), n = 0;
+  for (var i = 0; i < data.length; i++) {
+    if (!isPendingCancellation_(data[i])) continue;
+    if (fromDate) { var d = data[i][C.DATE - 1]; if (!(d instanceof Date) || toMidnight_(d) < toMidnight_(fromDate)) continue; }
+    cancelBookingRow_(sheet, r0 + i, { skipSync: true }); n++;
+  }
+  if (n) { try { updateFormOptions(); } catch (e) { Logger.log('updateFormOptions: ' + e.message); } }
+  return n;
+}
+
+/** Lưới an toàn: trigger onEdit lỗi / bận → heartbeat bắt lại. Chỉ buổi từ hôm nay (không gửi email huỷ cho buổi đã qua). */
+function processPendingCancellations_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEETS.BOOKINGS);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  var n = processCancellationsInRows_(sheet, 2, sheet.getLastRow(), getNow_());
+  if (n) Logger.log('processPendingCancellations_: ' + n + ' dòng');
+  return n;
+}
+function processPendingCancellations() {
+  var n = withScriptLock_('processPendingCancellations', processPendingCancellations_);
+  toast_('Đã xử lý ' + (n || 0) + ' dòng huỷ bị sót');
+  return n;
+}
+
+/**
+ * Tách riêng để test được: xoá Calendar event, ghi lý do, email, sync slot.
+ * Idempotent: cột L đã bắt đầu bằng CANCEL_NOTE_PREFIX → đã xử lý, bỏ qua.
+ */
+function cancelBookingRow_(sheet, row, opts) {
+  opts = opts || {};
   clearCache_();
   SpreadsheetApp.flush();
   var C = CONFIG.BOOKING_COLS, bookingRow = sheet.getRange(row, 1, 1, CONFIG.BOOKING_NUM_COLS).getValues()[0];
+  var note = String(bookingRow[C.FAIL_REASON - 1] || '');
+  if (note.indexOf(CONFIG.CANCEL_NOTE_PREFIX) === 0) { Logger.log('Dòng ' + row + ' đã xử lý huỷ trước đó → bỏ qua'); return { eventId: '', calendarDeleted: false, skipped: true }; }
   var eventId = String(bookingRow[C.EVENT_ID - 1] || '');
   var calendarDeleted = eventId ? deleteMeetEvent_(eventId) : false;
-  if (!bookingRow[C.FAIL_REASON - 1]) {
-    sheet.getRange(row, C.FAIL_REASON).setValue('Huỷ ' + formatDateTime_(getNow_()) + ' — đã hoàn buổi' + (calendarDeleted ? ', đã xoá lịch' : ''));
-  }
+  sheet.getRange(row, C.FAIL_REASON).setValue(CONFIG.CANCEL_NOTE_PREFIX + formatDateTime_(getNow_()) + ' — đã hoàn buổi' + (calendarDeleted ? ', đã xoá lịch' : '') + (note ? ' · ' + note : ''));
+  SpreadsheetApp.flush();
+  try { restoreStudentAfterRefund_(bookingRow[C.STUDENT_EMAIL - 1]); } catch (e0) { Logger.log('restoreStudentAfterRefund_: ' + e0.message); }
   try { sendCancelNotification(bookingRow); } catch (err) { Logger.log('Email huỷ: ' + err.message); }
-  try { updateFormOptions(); } catch (err2) { Logger.log('updateFormOptions: ' + err2.message); }
+  if (!opts.skipSync) { try { updateFormOptions(); } catch (err2) { Logger.log('updateFormOptions: ' + err2.message); } }
+  flushMailErrors_('huỷ booking dòng ' + row);
   Logger.log('Huỷ booking dòng ' + row + ' · event ' + (eventId || '—') + (calendarDeleted ? ' đã xoá' : ''));
-  return { eventId: eventId, calendarDeleted: calendarDeleted };
+  return { eventId: eventId, calendarDeleted: calendarDeleted, skipped: false };
 }
 
 
@@ -240,10 +326,35 @@ function testSystem() {
     for (var t = 0; t < tutors.length; t++) { if (!tut.getSheetByName(CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name)) { Logger.log('  LỖI  [Tutor] thiếu tab ' + CONFIG.TUTOR_SHEET_PREFIX + tutors[t].name); errors++; } }
   } catch (tErr) { Logger.log('  LỖI  không mở được Tutor spreadsheet: ' + tErr.message); errors++; }
 
+  // Công thức STUDENT_INFO (v6.1.0): thiếu → HV không đặt được; giới hạn $2000 → quá 2000 dòng BOOKINGS thì không trừ buổi
+  try {
+    var info = main.getSheetByName(CONFIG.SHEETS.STUDENT_INFO), S = CONFIG.STUDENT_COLS;
+    if (info && info.getLastRow() >= 2) {
+      var rg = info.getRange(2, 1, info.getLastRow() - 1, S.REMAINING), iv = rg.getValues(), ifx = rg.getFormulas(), missing = 0, legacy = 0;
+      for (var q = 0; q < iv.length; q++) {
+        if (!String(iv[q][S.EMAIL - 1] || '').trim()) continue;
+        var fU = ifx[q][S.USED - 1];
+        if (!fU || !ifx[q][S.REMAINING - 1]) missing++;
+        else if (fU.replace(LEGACY_RANGE_RE_, '$1') !== fU) legacy++;
+      }
+      if (missing) { Logger.log('  LỖI  ' + missing + ' học viên thiếu công thức số buổi → menu Học viên → Sửa công thức số buổi'); errors++; }
+      if (legacy) { Logger.log('  LỖI  ' + legacy + ' học viên dùng công thức cũ giới hạn 2000 dòng → menu Học viên → Sửa công thức số buổi'); errors++; }
+      if (!missing && !legacy) Logger.log('  OK   công thức số buổi STUDENT_INFO');
+    }
+  } catch (fe) { Logger.log('  CHÚ Ý không đọc được công thức STUDENT_INFO: ' + fe.message); warnings++; }
+
   // Form + trigger
   if (!getBookingFormId_()) { Logger.log('  CHÚ Ý chưa có form đặt lịch (menu 2)'); warnings++; }
   if (!getRegistrationFormId_()) { Logger.log('  CHÚ Ý chưa có form đăng ký (menu 2)'); warnings++; }
-  try { var n = ScriptApp.getProjectTriggers().length; if (n < 8) { Logger.log('  CHÚ Ý mới có ' + n + '/8 trigger (menu 3)'); warnings++; } else Logger.log('  OK   ' + n + ' trigger'); } catch (e3) { }
+  try {
+    var trg = ScriptApp.getProjectTriggers(), n = trg.length, handlers = {};
+    for (var h = 0; h < trg.length; h++) handlers[trg[h].getHandlerFunction()] = true;
+    if (n < 8) { Logger.log('  CHÚ Ý mới có ' + n + '/8 trigger (menu 3)'); warnings++; } else Logger.log('  OK   ' + n + ' trigger');
+    if (!handlers.heartbeat) { Logger.log('  CHÚ Ý chưa có trigger heartbeat (v6.1.0) → menu 3. Tạo/cập nhật 8 trigger'); warnings++; }
+  } catch (e3) { }
+
+  // Quota email ngày
+  try { var mq = MailApp.getRemainingDailyQuota(); if (mq < 50) { Logger.log('  CHÚ Ý chỉ còn ' + mq + ' email hôm nay'); warnings++; } else Logger.log('  OK   còn ' + mq + ' email hôm nay'); } catch (me) { }
 
   // Calendar
   try { Calendar.Events.list('primary', { maxResults: 1 }); Logger.log('  OK   Calendar API'); } catch (ce) { Logger.log('  LỖI  Calendar API chưa bật (Services → + → Google Calendar API)'); errors++; }
@@ -251,6 +362,7 @@ function testSystem() {
   var range = getActiveWeekRange_();
   Logger.log('  Tuần active: ' + formatDate_(range.monday) + ' → ' + formatDate_(range.sunday));
   Logger.log('  KẾT QUẢ: ' + errors + ' lỗi, ' + warnings + ' cảnh báo');
+  toast_('Kiểm tra hệ thống: ' + errors + ' lỗi, ' + warnings + ' cảnh báo. Chi tiết: Extensions → Apps Script → Executions');
   return errors;
 }
 
@@ -326,9 +438,7 @@ function testSeedStudents() {
     info.getRange(row, S.ACTIVATED_AT).setValue(getNow_()).setNumberFormat('dd/MM/yyyy');
     info.getRange(row, S.STATUS).setValue(CONFIG.STUDENT_STATUS.ACTIVE);
     info.getRange(row, S.NOTE).setValue(TEST_NOTE_);
-    // Cột F, G phải có công thức như các dòng thật
-    info.getRange(row, S.USED).setFormula('=COUNTIFS(BOOKINGS!$D$2:$D$2000,$B' + row + ',BOOKINGS!$J$2:$J$2000,"Active")+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B' + row + ',BOOKINGS!$J$2:$J$2000,"Completed")+COUNTIFS(BOOKINGS!$D$2:$D$2000,$B' + row + ',BOOKINGS!$J$2:$J$2000,"NoShow")');
-    info.getRange(row, S.REMAINING).setFormula('=MAX(0,E' + row + '-F' + row + ')');
+    ensureStudentFormulas_(info, row);   // cột F, G phải có công thức như các dòng thật
     idx[email] = { id: sid, row: row }; added++;
   }
   SpreadsheetApp.flush();

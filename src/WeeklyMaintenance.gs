@@ -1,19 +1,39 @@
 /**
- * WeeklyMaintenance.gs — Bảo Trì Tuần & Tháng (v6.0 FINAL)
+ * WeeklyMaintenance.gs — Bảo Trì Tuần & Tháng (v6.1.0)
+ *
+ * v6.1.0: trigger CN 23:00 bị lỡ (lỗi, bận lock) trước đây để form hiện tuần CŨ suốt 7 ngày.
+ *         Giờ heartbeat gọi ensureActiveWeekCurrent_() → tuần active cũ hơn tuần hiện tại thì tự
+ *         chuyển trong ≤ 10 phút và báo admin. Rollover chạy trong lock.
  *
  * v6.0 FIX: weeklyRollover cũ tính "thứ 2 kế tiếp" từ ngày hiện tại. Trigger Google
  * chạy lệch ±15 phút → nếu chạy lúc 00:05 thứ 2 thay vì 23:00 CN, nó nhảy sang tuần SAU NỮA.
  * Giờ: lấy thứ 2 của tuần chứa (now + 12h) → CN 23:00 hay T2 00:10 đều ra cùng 1 thứ 2.
  */
 function weeklyRollover(){
-  var ref=new Date(getNow_().getTime()+12*3600000),monday=getMondayOfWeek_(ref);
-  var cur=getActiveWeekStart_();
-  if(toMidnight_(monday)<=toMidnight_(cur)){Logger.log('Weekly rollover: tuần '+formatDate_(monday)+' không mới hơn tuần hiện tại '+formatDate_(cur)+' → bỏ qua');return;}
+  return withScriptLock_('weeklyRollover',function(){
+    var ref=new Date(getNow_().getTime()+12*3600000),monday=getMondayOfWeek_(ref);
+    var cur=getActiveWeekStart_();
+    if(toMidnight_(monday)<=toMidnight_(cur)){Logger.log('Weekly rollover: tuần '+formatDate_(monday)+' không mới hơn tuần hiện tại '+formatDate_(cur)+' → bỏ qua');return false;}
+    rolloverTo_(monday);return true;
+  },function(){notifyAdminError_('Chuyển tuần chưa chạy (hệ thống bận)',new Error('Heartbeat sẽ tự chuyển tuần trong 10 phút sau nửa đêm thứ 2.'),null);return false;});
+}
+function rolloverTo_(monday){
   setActiveWeekStart_(monday);
   clearCache_();
   try{ensureActiveWeekRows_();}catch(e){Logger.log('ensureActiveWeekRows_: '+e.message);}
   try{updateFormOptions();}catch(e2){Logger.log('updateFormOptions: '+e2.message);}
   Logger.log('Weekly rollover → '+formatDate_(monday));
+}
+/**
+ * Lưới an toàn cho weeklyRollover: tuần active cũ hơn tuần chứa "bây giờ" → chuyển ngay về tuần này.
+ * Không dùng now+12h như weeklyRollover: chạy trưa CN mà nhảy sang tuần sau thì mất ngày CN.
+ */
+function ensureActiveWeekCurrent_(){
+  var cur=getActiveWeekStart_(),monday=getMondayOfWeek_(getNow_());
+  if(toMidnight_(cur)>=toMidnight_(monday))return false;
+  rolloverTo_(monday);
+  notifyAdminError_('Tự chuyển tuần bị trễ',new Error('Tuần active là '+formatDate_(cur)+', đã chuyển sang '+formatDate_(monday)+'. Kiểm tra trigger weeklyRollover (menu 3. Tạo/cập nhật 8 trigger).'),null);
+  return true;
 }
 
 function ensureActiveWeekRows_(){
@@ -45,9 +65,11 @@ function monthlyRollover(){
   var today=getNow_(),curYear=today.getFullYear(),curMonth=today.getMonth()+1;
   var prevMonth=curMonth-1,prevYear=curYear;if(prevMonth===0){prevMonth=12;prevYear=curYear-1;}
   Logger.log('Monthly: archive '+prevMonth+'/'+prevYear+', build '+curMonth+'/'+curYear);
-  try{archiveMonth(prevYear,prevMonth);}catch(e){Logger.log('archiveMonth: '+e.message);notifyAdminError_('Lỗi archive tháng',e,null);}
-  try{rebuildCurrentMonth(curYear,curMonth);}catch(e2){Logger.log('rebuildCurrentMonth: '+e2.message);notifyAdminError_('Lỗi rebuild tháng',e2,null);}
-  try{updateFormOptions();}catch(e3){}
+  withScriptLock_('monthlyRollover',function(){
+    try{archiveMonth(prevYear,prevMonth);}catch(e){Logger.log('archiveMonth: '+e.message);notifyAdminError_('Lỗi archive tháng',e,null);}
+    try{rebuildCurrentMonth(curYear,curMonth);}catch(e2){Logger.log('rebuildCurrentMonth: '+e2.message);notifyAdminError_('Lỗi rebuild tháng',e2,null);}
+    try{updateFormOptions();}catch(e3){Logger.log('updateFormOptions: '+e3.message);}
+  },function(){notifyAdminError_('Archive tháng chưa chạy (hệ thống bận)',new Error('Chạy tay: menu Lịch → Archive + rebuild tháng.'),null);});
 }
 function setupMonthCalendar(year,month){rebuildCurrentMonth(year,month);}
 
@@ -59,7 +81,8 @@ function sundayReminderTutors(){
   var sheetUrl='';try{sheetUrl=getTutorSpreadsheet_().getUrl();}catch(e){sheetUrl=SpreadsheetApp.getActive().getUrl();}
   var tutors=getActiveTutors_(),sent=0;
   for(var i=0;i<tutors.length;i++){var t=tutors[i];if(!t.email)continue;
-    var body=emailBanner_('Đến hạn cập nhật lịch dạy','Tuần '+monStr+' đến '+sunStr,'#E8F0FE','#174EA6')+'<p style="font-size:15px;color:#1b2a4a">Chào <b>'+t.name+'</b>,</p><p style="font-size:14px;color:#4a5568;line-height:1.7">Form đăng ký sẽ mở cho tuần tới. Lịch rảnh bạn điền quyết định khung giờ học viên thấy được.</p><div style="border:1px solid #e4e9f0;border-radius:10px;padding:16px 20px"><table style="width:100%;border-collapse:collapse">'+infoRow_('Tuần cần điền',monStr+' đến '+sunStr)+infoRow_('Tab của bạn',CONFIG.TUTOR_SHEET_PREFIX+t.name)+infoRow_('Hạn chốt','<span style="color:#C62828">12:00 trưa Chủ nhật</span>')+'</table></div>'+ctaButton_('Mở bảng lịch',sheetUrl,'#2F5496');
-    MailApp.sendEmail({to:t.email,subject:'Cập nhật lịch dạy tuần '+monStr+' | '+CONFIG.SCHOOL_NAME,htmlBody:emailWrapper_(body,'#1A73E8','Hạn điền lịch: trưa Chủ nhật.'),replyTo:getReplyToEmail_(),name:CONFIG.SCHOOL_NAME});sent++;}
+    var body=emailBanner_('Đến hạn cập nhật lịch dạy','Tuần '+monStr+' đến '+sunStr,'#E8F0FE','#174EA6')+'<p style="font-size:15px;color:#1b2a4a">Chào <b>'+esc_(t.name)+'</b>,</p><p style="font-size:14px;color:#4a5568;line-height:1.7">Form đăng ký sẽ mở cho tuần tới. Lịch rảnh bạn điền quyết định khung giờ học viên thấy được.</p><div style="border:1px solid #e4e9f0;border-radius:10px;padding:16px 20px"><table style="width:100%;border-collapse:collapse">'+infoRow_('Tuần cần điền',monStr+' đến '+sunStr)+infoRow_('Tab của bạn',esc_(CONFIG.TUTOR_SHEET_PREFIX+t.name))+infoRow_('Hạn chốt','<span style="color:#C62828">12:00 trưa Chủ nhật</span>')+'</table></div>'+ctaButton_('Mở bảng lịch',sheetUrl,'#2F5496');
+    if(sendMail_({to:t.email,subject:'Cập nhật lịch dạy tuần '+monStr+' | '+CONFIG.SCHOOL_NAME,htmlBody:emailWrapper_(body,'#1A73E8','Hạn điền lịch: trưa Chủ nhật.'),replyTo:getReplyToEmail_(),name:CONFIG.SCHOOL_NAME}))sent++;}
+  flushMailErrors_('nhắc tutor Chủ nhật');
   Logger.log('Đã nhắc '+sent+'/'+tutors.length+' tutor');
 }

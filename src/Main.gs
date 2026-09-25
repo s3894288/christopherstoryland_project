@@ -1,5 +1,13 @@
 /**
- * Main.gs — Xử Lý Form Đặt Lịch (v6.0.1 HOTFIX)
+ * Main.gs — Xử Lý Form Đặt Lịch (v6.1.0)
+ *
+ * v6.1.0:
+ *   Trigger form đôi khi bắn 2 lần cho 1 phản hồi → trước đây HV bị xếp 2 tutor cùng slot, trừ 2 buổi.
+ *   Giờ: HV đã giữ slot đó trong DUPLICATE_SUBMIT_WINDOW_MINUTES → bỏ qua im lặng; cũ hơn → Failed DUPLICATE.
+ *   HV trạng thái Paused → Failed PAUSED (trước đây vẫn đặt được).
+ *   Đọc BOOKINGS 1 lần (loadBookingState_); slot vừa đặt tính ngay vào Round Robin.
+ *   Tạo Meet thử lại MEET_CREATE_ATTEMPTS lần; vẫn lỗi → booking Active + admin nhận email để tạo tay.
+ *   Email lỗi không còn chặn các bước sau; admin nhận 1 email tổng hợp.
  *
  * v6.0.1 (24/09/2026):
  *   BUG NGHIÊM TRỌNG: FormLink.gs tạo trigger kiểu "From form". Trigger này chỉ gửi
@@ -21,10 +29,10 @@
 function onFormSubmitTrigger(e){
   var ev=normalizeFormEvent_(e);
   if(!ev){Logger.log('Bỏ qua: onFormSubmitTrigger chỉ chạy khi học viên submit form. Muốn xử lý phản hồi bị sót: menu thaiput → Form → Xử lý lại phản hồi bị sót.');return;}
-  var lock=LockService.getScriptLock();
-  try{if(!lock.tryLock(CONFIG.LOCK_TIMEOUT_MS)){Logger.log('Không lấy được lock');notifyAdminError_('Không lấy được lock khi đặt lịch',new Error('Lock timeout. Chạy menu thaiput → Form → Xử lý lại phản hồi bị sót.'),ev);return;}clearCache_();processBooking_(ev);}
-  catch(err){Logger.log('LỖI: '+err.message);notifyAdminError_('Lỗi xử lý đặt lịch',err,ev);}
-  finally{lock.releaseLock();}
+  withScriptLock_('onFormSubmitTrigger',function(){
+    try{clearCache_();processBooking_(ev);}
+    catch(err){Logger.log('LỖI: '+err.message);notifyAdminError_('Lỗi xử lý đặt lịch',err,ev);}
+  },function(){notifyAdminError_('Không lấy được lock khi đặt lịch',new Error('Lock timeout. Chạy menu thaiput → Form → Xử lý lại phản hồi bị sót.'),ev);});
 }
 
 /**
@@ -66,26 +74,29 @@ function processBooking_(e){
   var budgetLeft=(quota.found&&CONFIG.QUOTA.ENFORCE)?quota.remaining:Number.MAX_SAFE_INTEGER;
   if(!CONFIG.QUOTA.ENFORCE)budgetLeft=Number.MAX_SAFE_INTEGER;
 
-  var allRows=[],successBookings=[],failedSlots=[],now=getNow_();
+  var allRows=[],successBookings=[],failedSlots=[],now=getNow_(),state=loadBookingState_(bookingsSheet),emailKey=studentEmail.toLowerCase(),dupSkipped=0;
+  var dupWindowMs=(CONFIG.DUPLICATE_SUBMIT_WINDOW_MINUTES||0)*60000;
+  function fail_(slot,reason){allRows.push(bookingToRow_(generateBookingId_(),studentId,studentName,studentEmail,'','',slot.date,slot.timeSlot,'',CONFIG.STATUS.FAILED,now,reason,'',''));failedSlots.push({date:slot.date,timeSlot:slot.timeSlot,reason:reason});}
   for(var i=0;i<selectedSlots.length;i++){
     var slot=selectedSlots[i];
     // 1. Slot đã qua → fail ngay, không trừ budget
-    if(!isSlotBookable_(slot.date,slot.timeSlot)){
-      allRows.push(bookingToRow_(generateBookingId_(),studentId,studentName,studentEmail,'','',slot.date,slot.timeSlot,'',CONFIG.STATUS.FAILED,now,CONFIG.FAIL_REASONS.PAST_SLOT,'',''));
-      failedSlots.push({date:slot.date,timeSlot:slot.timeSlot,reason:CONFIG.FAIL_REASONS.PAST_SLOT});continue;
+    if(!isSlotBookable_(slot.date,slot.timeSlot)){fail_(slot,CONFIG.FAIL_REASONS.PAST_SLOT);continue;}
+    // 2. HV đã giữ slot này: vừa tạo (trigger bắn 2 lần) → bỏ qua im lặng; cũ hơn → báo trùng
+    var held=state.student[emailKey+'|'+dateKey_(slot.date)+'|'+slot.timeSlot];
+    if(held!==undefined){
+      if(held&&now.getTime()-held<dupWindowMs){dupSkipped++;Logger.log('Bỏ qua trùng (trigger bắn lại): '+studentEmail+' '+formatDate_(slot.date)+' '+slot.timeSlot);continue;}
+      fail_(slot,CONFIG.FAIL_REASONS.DUPLICATE);continue;
     }
-    // 2. Quota
+    // 3. Quota
     var elig=checkQuotaEligibility_(quota,budgetLeft);
-    if(!elig.allowed){
-      allRows.push(bookingToRow_(generateBookingId_(),studentId,studentName,studentEmail,'','',slot.date,slot.timeSlot,'',CONFIG.STATUS.FAILED,now,elig.reason,'',''));
-      failedSlots.push({date:slot.date,timeSlot:slot.timeSlot,reason:elig.reason});continue;
-    }
-    // 3. Tìm tutor + tạo Meet
-    var result=tryBookSlot_(slot.date,slot.timeSlot,studentEmail,studentName,studentId,bookingsSheet);
+    if(!elig.allowed){fail_(slot,elig.reason);continue;}
+    // 4. Tìm tutor + tạo Meet
+    var result=tryBookSlot_(slot.date,slot.timeSlot,studentEmail,studentName,studentId,state);
     allRows.push(result.row);
-    if(result.success){successBookings.push(result);budgetLeft--;}
+    if(result.success){successBookings.push(result);budgetLeft--;recordBooking_(state,result.tutor.id,studentEmail,slot.date,slot.timeSlot,now.getTime());}
     else failedSlots.push({date:result.date,timeSlot:result.timeSlot,reason:result.reason});
   }
+  if(allRows.length===0){Logger.log('Không có gì để ghi ('+dupSkipped+' slot trùng do trigger bắn lại)');return;}
 
   // Cột G phải là midnight để COUNTIFS khớp
   for(var j=0;j<allRows.length;j++){var dv=allRows[j][CONFIG.BOOKING_COLS.DATE-1];if(dv instanceof Date)allRows[j][CONFIG.BOOKING_COLS.DATE-1]=new Date(dv.getFullYear(),dv.getMonth(),dv.getDate());}
@@ -93,9 +104,13 @@ function processBooking_(e){
 
   try{updateFormOptions();}catch(uf){Logger.log('updateFormOptions: '+uf.message);}
 
-  if(successBookings.length>0&&CONFIG.EMAIL.SEND_CONFIRMATION){var ra=quota.found?Math.max(0,quota.remaining-successBookings.length):null;sendBookingConfirmation(studentEmail,studentName,successBookings,quota,ra);}
-  if(failedSlots.length>0)sendFailureNotifications(studentEmail,studentName,studentId,failedSlots,quota,successBookings.length);
-  handleBalanceAlerts_(quota,successBookings.length,successBookings);
+  // Dữ liệu đã ghi. Từ đây mỗi bước độc lập: bước nào lỗi cũng không chặn bước sau.
+  var noMeet=successBookings.filter(function(b){return !b.meetLink;});
+  if(noMeet.length)notifyAdminError_('Booking đã xác nhận nhưng CHƯA có Google Meet — cần tạo tay',new Error(noMeet.map(function(b){return b.bookingId+' · '+studentEmail+' · '+formatDate_(b.date)+' '+b.timeSlot+' · tutor '+b.tutor.name+(b.meetError?' · '+b.meetError:'');}).join('\n')),null);
+  try{if(successBookings.length>0&&CONFIG.EMAIL.SEND_CONFIRMATION){var ra=quota.found?Math.max(0,quota.remaining-successBookings.length):null;sendBookingConfirmation(studentEmail,studentName,successBookings,quota,ra);}}catch(e1){Logger.log('sendBookingConfirmation: '+e1.message);MAIL_ERRORS_.push('Xác nhận '+studentEmail+': '+e1.message);}
+  try{if(failedSlots.length>0)sendFailureNotifications(studentEmail,studentName,studentId,failedSlots,quota,successBookings.length);}catch(e2){Logger.log('sendFailureNotifications: '+e2.message);MAIL_ERRORS_.push('Thất bại '+studentEmail+': '+e2.message);}
+  try{handleBalanceAlerts_(quota,successBookings.length,successBookings);}catch(e3){Logger.log('handleBalanceAlerts_: '+e3.message);}
+  flushMailErrors_('đặt lịch '+studentEmail);
 }
 
 function parseFormSlots_(e,weekStart){
@@ -106,17 +121,20 @@ function parseFormSlots_(e,weekStart){
   return slots;
 }
 
-function tryBookSlot_(date,timeSlot,studentEmail,studentName,studentId,bookingsSheet){
+function tryBookSlot_(date,timeSlot,studentEmail,studentName,studentId,state){
   var bookingId=generateBookingId_(),now=getNow_();
-  var tutor=assignTutor_(date,timeSlot,bookingsSheet);
+  var tutor=assignTutor_(date,timeSlot,state);
   if(!tutor){
     // Phân biệt: không tutor nào rảnh (SLOT_FULL) vs có rảnh nhưng đã bị đặt hết (cũng SLOT_FULL với HV)
     var reason=checkSlotAvailability_(date,timeSlot)<=0?CONFIG.FAIL_REASONS.SLOT_FULL:CONFIG.FAIL_REASONS.NO_TUTOR;
     return{success:false,reason:reason,date:date,timeSlot:timeSlot,row:bookingToRow_(bookingId,studentId,studentName,studentEmail,'','',date,timeSlot,'',CONFIG.STATUS.FAILED,now,reason,'','')};
   }
-  var meet={link:'',eventId:''};
-  try{meet=createMeetEvent_(date,timeSlot,studentEmail,tutor.email,studentName,tutor.name);}catch(me){Logger.log('Meet err: '+me.message);}
-  return{success:true,reason:'',tutor:tutor,meetLink:meet.link,eventId:meet.eventId,bookingId:bookingId,date:date,timeSlot:timeSlot,row:bookingToRow_(bookingId,studentId,studentName,studentEmail,tutor.id,tutor.name,date,timeSlot,meet.link,CONFIG.STATUS.ACTIVE,now,'','',meet.eventId)};
+  var meet={link:'',eventId:''},meetError='',attempts=Math.max(1,CONFIG.MEET_CREATE_ATTEMPTS||1);
+  for(var a=1;a<=attempts;a++){
+    try{meet=createMeetEvent_(date,timeSlot,studentEmail,tutor.email,studentName,tutor.name);meetError='';break;}
+    catch(me){meetError=me.message;Logger.log('Meet lỗi lần '+a+'/'+attempts+': '+me.message);if(a<attempts)Utilities.sleep(1500*a);}
+  }
+  return{success:true,reason:'',tutor:tutor,meetLink:meet.link,eventId:meet.eventId,meetError:meetError,bookingId:bookingId,date:date,timeSlot:timeSlot,row:bookingToRow_(bookingId,studentId,studentName,studentEmail,tutor.id,tutor.name,date,timeSlot,meet.link,CONFIG.STATUS.ACTIVE,now,'','',meet.eventId)};
 }
 
 function bookingToRow_(bookingId,studentId,studentName,studentEmail,tutorId,tutorName,date,timeSlot,meetLink,status,createdAt,failReason,attendanceAt,eventId){
@@ -140,8 +158,9 @@ function checkSlotAvailability_(date,timeSlot){var sheet=SpreadsheetApp.getActiv
  */
 var RECOVER_HOURS=72;
 function recoverMissedBookings(){
-  var lock=LockService.getScriptLock();
-  if(!lock.tryLock(CONFIG.LOCK_TIMEOUT_MS)){Logger.log('Không lấy được lock, thử lại sau 1 phút');return{done:0,skipped:0,old:0,errors:1};}
+  return withScriptLock_('recoverMissedBookings',recoverMissedBookingsLocked_,function(){toast_('Hệ thống đang bận, thử lại sau 1 phút');return{done:0,skipped:0,old:0,errors:1};});
+}
+function recoverMissedBookingsLocked_(){
   var report=[],done=0,skipped=0,old=0,errors=0;
   try{
     clearCache_();
@@ -167,7 +186,6 @@ function recoverMissedBookings(){
       catch(pe){errors++;report.push('✘ '+email+': '+pe.message);Logger.log('recover lỗi '+email+': '+pe.message);}
     }
   }catch(err){Logger.log('recoverMissedBookings: '+err.message);report.push('LỖI: '+err.message);errors++;}
-  finally{lock.releaseLock();}
   var msg='Đã xử lý lại: '+done+'\nĐã có sẵn / bỏ qua: '+skipped+'\nThuộc tuần trước: '+old+'\nLỗi: '+errors+(report.length?'\n\n'+report.join('\n'):'');
   Logger.log(msg);
   try{SpreadsheetApp.getUi().alert('Xử lý lại phản hồi bị sót ('+RECOVER_HOURS+' giờ)',msg,SpreadsheetApp.getUi().ButtonSet.OK);}catch(u){}

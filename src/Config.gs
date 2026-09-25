@@ -1,16 +1,19 @@
 /**
- * Config.gs — Cấu hình tập trung (v6.0 FINAL)
+ * Config.gs — Cấu hình tập trung (v6.1.0)
  *
  * BẮT BUỘC ĐIỀN: ADMIN_EMAIL, TUTOR_SS_ID, REGISTRATION_SS_ID
  * KHÔNG CẦN ĐIỀN: BOOKING_FORM_ID, REGISTRATION_FORM_ID (tự lưu vào Script Properties
  *                  khi chạy setupAllForms hoặc menu Form → Kết nối)
  *
+ * v6.1: FAIL_REASONS thêm PAUSED, DUPLICATE · DUPLICATE_SUBMIT_WINDOW_MINUTES chống trigger bắn 2 lần
+ *       CANCEL_NOTE_PREFIX đánh dấu dòng huỷ đã xử lý · MEET_CREATE_ATTEMPTS thử lại tạo Meet
+ *       LOCK_TIMEOUT_MS 60 giây (heartbeat giờ cũng giữ lock)
  * v6.0: BOOKINGS 14 cột (thêm N: EventID để xoá lịch Calendar khi huỷ)
  *       PAST_SLOT + MIN_LEAD_MINUTES chặn đặt slot đã qua / quá sát giờ
  *       ROUND_ROBIN_SCOPE = 'week' cân bằng theo tuần, không theo lịch sử trọn đời
  */
 var CONFIG = {
-  VERSION: '6.0.1',
+  VERSION: '6.1.0',
   ADMIN_EMAIL: 'PASTE_ADMIN_EMAIL_HERE',
   TUTOR_SS_ID: '',
   REGISTRATION_SS_ID: '',
@@ -50,7 +53,9 @@ var CONFIG = {
     SLOT_FULL:'Khung giờ đã hết chỗ',
     NO_TUTOR:'Không còn tutor trống cho khung giờ này',
     UNKNOWN_STUDENT:'Email chưa được kích hoạt trong hệ thống',
-    PAST_SLOT:'Khung giờ đã qua hoặc quá sát giờ học'
+    PAST_SLOT:'Khung giờ đã qua hoặc quá sát giờ học',
+    PAUSED:'Tài khoản đang tạm dừng — liên hệ trung tâm',
+    DUPLICATE:'Bạn đã có lịch ở khung giờ này'
   },
 
   ASSIGNMENT_STRATEGY: 'round_robin',
@@ -62,7 +67,10 @@ var CONFIG = {
 
   EMAIL: { SEND_CONFIRMATION:true, SEND_FAILURE_STUDENT:true, NOTIFY_ADMIN_ON_FAILURE:true, SEND_CANCEL_NOTIFICATION:true, SEND_TUTOR_NOTIFICATION:true, SEND_WELCOME_ON_ACTIVATE:true },
   POLICY: { CANCEL_NOTICE_HOURS:24, JOIN_EARLY_MINUTES:5, MIN_LEAD_MINUTES:60 },
-  LOCK_TIMEOUT_MS: 30000,
+  LOCK_TIMEOUT_MS: 60000,
+  DUPLICATE_SUBMIT_WINDOW_MINUTES: 5,   // cùng HV + cùng slot trong 5 phút = trigger bắn 2 lần → bỏ qua im lặng
+  MEET_CREATE_ATTEMPTS: 2,
+  CANCEL_NOTE_PREFIX: 'Huỷ ',           // cột L bắt đầu bằng chuỗi này = huỷ đã xử lý (email + xoá Calendar)
   ID_PREFIX: { BOOKING:'BK', STUDENT:'S' }
 };
 function getReplyToEmail_() { return CONFIG.SCHOOL_EMAIL || CONFIG.ADMIN_EMAIL; }
